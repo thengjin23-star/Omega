@@ -6,6 +6,8 @@ import { mateStatKeys, suggestPartners, type Suggestion } from '../assembly/memo
 import { bomToCsv, buildBom } from '../assembly/bom'
 import * as ops from '../assembly/moduleOps'
 import { copyAttachments } from '../assembly/copyAttachments'
+import { autoAssemble, type AssembleItem } from '../assembly/autoAssemble'
+import { parsePartsList, productIndex } from '../assembly/partsList'
 import { isTubeSocket } from '../assembly/tubes'
 import type { DrawingInfo, IllustrationInfo, ModuleDoc, ModuleInstance, ModuleTube, PortRef } from '../assembly/types'
 import { deriveModuleCircuit, type ModuleCircuit } from '../assembly/moduleCircuit'
@@ -60,6 +62,22 @@ export interface DraftPort {
   instance: string
   productId: string
   proposal: PortProposal
+}
+
+/** 依型號清單組裝的結果（清單的問題、沒有接上的零件） */
+export interface BuildOutcome {
+  /** 產品庫找不到的型號（附相近的型號） */
+  notFound: { line: number; code: string; similar: string[] }[]
+  /** 沒有 3D 檔、無法組裝的產品 */
+  noModel: { line: number; code: string }[]
+  /** 看不懂的行 */
+  errors: { line: number; text: string; message: string }[]
+  /** 沒有接上的零件與原因 */
+  leftovers: { line?: number; code: string; qty: number; reason: string; adapters: { adapter: string; at: string }[] }[]
+  /** 模組中的零件數 */
+  placed: number
+  /** 分開的群組數 */
+  groups: number
 }
 
 export interface Message {
@@ -136,6 +154,12 @@ interface State {
   autoFill(instanceId: string): Promise<void>
   /** 把接在這個零件上的零件，照樣接到其他相同零件的同一個埠 */
   applyToSameParts(instanceId: string): void
+  /** 依型號清單自動組裝（目前的模組是空的或也是由清單組成時，直接取代；否則開新模組） */
+  buildFromList(text: string, meta: { name?: string; customer?: string }): Promise<BuildOutcome>
+  /** 在空著的埠接上指定的零件（搭配檢查的「補上」） */
+  attachAt(at: PortRef, productId: string, portId: string): Promise<void>
+  /** 一次補上多個（只算一步復原） */
+  attachMany(list: { at: PortRef; productId: string; portId: string }[]): Promise<void>
   /** 更換零件的產品，盡量保留原本的鎖合 */
   replaceInstanceProduct(instanceId: string, productId: string): Promise<void>
   /** 複製選取的零件（不含鎖合） */
@@ -420,6 +444,28 @@ export const useModuleStore = create<State>()((set, get) => {
       }
     })
     return thumbQueue
+  }
+
+  /** 自動組裝的各組依序排在右側（間隔 40 mm），底面貼齊 z = 0 */
+  const arrangeGroups = (doc: ModuleDoc, roots: readonly string[]): ModuleDoc => {
+    const { products, meshes } = get()
+    const { transforms } = ops.computeTransforms(doc, products)
+    const placements = { ...doc.placements }
+    let cursor = 0
+    for (const root of roots) {
+      const box = new Box3()
+      for (const id of ops.groupOf(doc, root)) {
+        const inst = doc.instances.find((i) => i.id === id)
+        const m = inst && meshes[products[inst.productId]?.source.sha256 ?? '']
+        if (!m || !transforms[id]) continue
+        box.union(new Box3(new Vector3(...m.bbox.min), new Vector3(...m.bbox.max)).applyMatrix4(new Matrix4().fromArray(transforms[id])))
+      }
+      if (box.isEmpty() || !placements[root]) continue
+      const move = new Matrix4().makeTranslation(cursor - box.min.x, -(box.min.y + box.max.y) / 2, -box.min.z)
+      placements[root] = move.multiply(new Matrix4().fromArray(placements[root])).toArray()
+      cursor += box.max.x - box.min.x + 40
+    }
+    return { ...doc, placements }
   }
 
   /** 新零件放在目前模組的右側、底面貼齊 z = 0 */
@@ -710,6 +756,99 @@ export const useModuleStore = create<State>()((set, get) => {
         commit(next)
         for (const m of next.mates.filter((x) => !doc.mates.some((y) => y.id === x.id))) void recordMate(next, m.parent, m.child)
         info(`已自動配上 ${added.length} 個零件：${added.join('、')}${noRecord ? `；另有 ${noRecord} 個埠沒有搭配記錄` : ''}`)
+      } catch (err) {
+        fail(err)
+      }
+    },
+
+    async buildFromList(text, meta) {
+      const { products, stats } = get()
+      const library = Object.values(products)
+      const index = productIndex(library)
+      const parsed = parsePartsList(text, index.isCode)
+      const outcome: BuildOutcome = { notFound: [], noModel: [], errors: parsed.errors, leftovers: [], placed: 0, groups: 0 }
+      const items: AssembleItem[] = []
+      for (const e of parsed.entries) {
+        const product = index.find(e.code)
+        if (!product) {
+          outcome.notFound.push({ line: e.line, code: e.code, similar: index.similar(e.code).map((p) => p.modelCode) })
+          continue
+        }
+        if (!hasModel(product)) {
+          outcome.noModel.push({ line: e.line, code: product.modelCode })
+          continue
+        }
+        const target = e.hint?.target ? index.find(e.hint.target) : undefined
+        items.push({ product, qty: e.qty, line: e.line, ...(e.hint && { hint: { ports: e.hint.ports, ...(target && { target }) } }) })
+      }
+      if (!items.length) return outcome
+      try {
+        set({ busy: '自動組裝中…' })
+        for (const product of new Set(items.map((i) => i.product))) {
+          if (!(await ensureMesh(product))) throw new Error(`「${product.modelCode}」的 3D 檔讀取失敗`)
+        }
+        const r = autoAssemble(items, get().products, { name: meta.name, customer: meta.customer, stats, library })
+        let doc: ModuleDoc = { ...arrangeGroups(r.doc, r.roots), partsList: text }
+        const cur = get().doc
+        if (!cur.instances.length || cur.partsList !== undefined) {
+          // 取代目前的模組（可以復原）
+          doc = { ...doc, id: cur.id, createdAt: cur.createdAt, drawing: cur.drawing, illustration: cur.illustration, notes: cur.notes }
+          commit(doc)
+          set((s) => ({ selected: undefined, selectedTube: undefined, connectFrom: undefined, fitRequest: s.fitRequest + 1, fitTarget: undefined }))
+        } else {
+          // 目前的模組是手動組的：先存好，再開新模組
+          if (!get().saved && catalog) await catalog.putModule(cur)
+          await openDoc(doc)
+          set({ saved: false })
+          scheduleSave()
+        }
+        outcome.leftovers = r.leftovers.map((l) => ({
+          line: items[l.item].line,
+          code: items[l.item].product.modelCode,
+          qty: l.qty,
+          reason: l.reason,
+          adapters: l.adapters.map((a) => ({ adapter: a.adapter.modelCode, at: a.at })),
+        }))
+        outcome.placed = doc.instances.length
+        outcome.groups = r.roots.length
+        set({ busy: undefined })
+      } catch (err) {
+        fail(err)
+        throw err
+      }
+      return outcome
+    },
+
+    async attachAt(at, productId, portId) {
+      await get().attachMany([{ at, productId, portId }])
+    },
+
+    async attachMany(list) {
+      const { products } = get()
+      let next = get().doc
+      const added: string[] = []
+      const newMates: [PortRef, PortRef][] = []
+      try {
+        for (const { at, productId, portId } of list) {
+          const product = products[productId]
+          if (!product) continue
+          const mesh = await ensureMesh(product)
+          if (!mesh) continue
+          const inst = ops.addInstance(next, product.id, placementBeside(mesh))
+          const child = { instance: inst.instanceId, port: portId }
+          const r = ops.connect(inst.doc, products, at, child)
+          if ('error' in r) continue
+          next = r.doc
+          added.push(product.modelCode)
+          newMates.push([at, child])
+        }
+        if (!added.length) {
+          info('沒有可以補上的零件（埠可能已經接了）')
+          return
+        }
+        commit(next)
+        for (const [a, b] of newMates) void recordMate(next, a, b)
+        info(added.length === 1 ? `已接上「${added[0]}」` : `已補上 ${added.length} 個零件：${added.join('、')}`)
       } catch (err) {
         fail(err)
       }

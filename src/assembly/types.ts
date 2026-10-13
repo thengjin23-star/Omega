@@ -102,6 +102,8 @@ export interface ModuleDoc {
   drawing?: DrawingInfo
   /** 示意圖設定 */
   illustration?: IllustrationInfo
+  /** 依型號清單自動組裝時的清單原文（再打開時可以修改後重新組裝） */
+  partsList?: string
   instances: ModuleInstance[]
   mates: Mate[]
   /** PU 管 */
