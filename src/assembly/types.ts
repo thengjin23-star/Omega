@@ -70,12 +70,38 @@ export interface DrawingInfo {
   sizingSheet?: boolean
 }
 
+/** 示意圖的視角：目前 3D 畫面、六個正面方向或等角 */
+export type IllustrationView = 'current' | FrontSide | 'iso'
+
+/** 示意圖設定（著色 3D 圖＋型號標註）：記在模組裡，下次打開沿用 */
+export interface IllustrationInfo {
+  view?: IllustrationView
+  /** view 為 'current' 時記下的視線方向（相機看的方向）與畫面上方 */
+  camera?: { dir: [number, number, number]; up: [number, number, number] }
+  /** 零件顏色：依 3D 檔，或統一灰色（型錄風格） */
+  color?: 'model' | 'gray'
+  /** 零件輪廓線 */
+  edges?: boolean
+  /** 標註內容：型號、型號＋數量、型號＋名稱 */
+  label?: 'code' | 'code-qty' | 'code-name'
+  /** 不標註的型號（群組鍵：產品 id，PU 管為 tube:管徑） */
+  hidden?: string[]
+  /** 自訂的標註文字（群組鍵 → 文字） */
+  texts?: Record<string, string>
+  /** 拖曳過的標註位置（標籤左上角，示意圖座標）；換視角或按「重新排列」時清除 */
+  positions?: Record<string, [number, number]>
+  /** 圖片下方加上模組名稱、客戶與日期 */
+  footer?: boolean
+}
+
 export interface ModuleDoc {
   id: string
   name: string
   customer?: string
   notes?: string
   drawing?: DrawingInfo
+  /** 示意圖設定 */
+  illustration?: IllustrationInfo
   instances: ModuleInstance[]
   mates: Mate[]
   /** PU 管 */
