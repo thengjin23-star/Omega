@@ -63,7 +63,7 @@ export function Menu({ label, icon, items, align = 'left' }: { label: string; ic
   }, [open, place])
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         ref={button}
         type="button"
@@ -72,7 +72,7 @@ export function Menu({ label, icon, items, align = 'left' }: { label: string; ic
         aria-label={label}
         title={label}
         onClick={() => setOpen((v) => !v)}
-        className={`flex h-9 items-center gap-1 rounded-md px-2.5 text-sm font-medium text-slate-100 transition hover:bg-white/10 ${open ? 'bg-white/10' : ''}`}
+        className={`flex h-9 items-center gap-1 rounded-md px-2.5 text-sm font-medium whitespace-nowrap text-slate-100 transition hover:bg-white/10 ${open ? 'bg-white/10' : ''}`}
       >
         {icon}
         <span className="hidden sm:inline">{label}</span>

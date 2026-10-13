@@ -28,8 +28,8 @@ export interface ProductPort {
   spec?: PortSpec
   frame: PortFrame
   rotation: PortRotation
-  /** 由 3D 模型自動量測到的資訊 */
-  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number }
+  /** 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（使用者還沒確認） */
+  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean }
 }
 
 export type ProductCategory =
