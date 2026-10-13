@@ -42,6 +42,16 @@ export const VALVE_FUNCTION_LABEL: Record<ValveFunction, string> = {
   '32NC': '3/2 電磁閥（常閉）',
   '52Pilot': '5/2 氣控閥',
 }
+/** 型號用的簡稱 */
+const VALVE_SHORT: Record<ValveFunction, string> = {
+  '52Single': '5/2單',
+  '52Double': '5/2雙',
+  '53Closed': '5/3中封',
+  '53Exhaust': '5/3中排',
+  '53Pressure': '5/3中壓',
+  '32NC': '3/2',
+  '52Pilot': '5/2氣控',
+}
 const VALVE_TYPE: Record<ValveFunction, string> = {
   '52Single': 'valve52Single',
   '52Double': 'valve52Double',
@@ -126,8 +136,8 @@ export function genericMeta(spec: GenericSpec): GenericMeta {
       })
     case 'valve': {
       const label = VALVE_FUNCTION_LABEL[spec.fn]
-      if (spec.mount === 'base') return meta(`底板閥 ${t(spec.thread)} ${spec.fn}`, `${label}（底板式，集裝座用 ${t(spec.thread)}）`, 'valve', { type: VALVE_TYPE[spec.fn] })
-      return meta(`電磁閥 ${t(spec.thread)} ${spec.fn}`, `${label} ${t(spec.thread)}`, 'valve', { type: VALVE_TYPE[spec.fn] })
+      if (spec.mount === 'base') return meta(`底板閥 ${VALVE_SHORT[spec.fn]} ${t(spec.thread)}`, `${label}（底板式，集裝座用 ${t(spec.thread)}）`, 'valve', { type: VALVE_TYPE[spec.fn] })
+      return meta(`電磁閥 ${VALVE_SHORT[spec.fn]} ${t(spec.thread)}`, `${label} ${t(spec.thread)}`, 'valve', { type: VALVE_TYPE[spec.fn] })
     }
     case 'manifold':
       return meta(`集裝座 ${spec.stations} 站 ${t(spec.thread)}`, `集裝座 ${spec.stations} 站（A／B ${t(spec.thread)}）`, 'manifold', { type: 'manifold' })

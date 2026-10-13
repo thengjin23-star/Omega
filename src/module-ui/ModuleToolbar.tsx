@@ -5,6 +5,7 @@ import { useModuleStore } from './moduleStore'
 import { Menu } from '../components/Menu'
 import { BarButton, Button, Dialog } from '../components/ui'
 import { BuildFromListDialog } from './BuildFromListDialog'
+import { DescribeDialog } from './DescribeDialog'
 import { DrawingDialog } from './DrawingDialog'
 import { IllustrationDialog } from './IllustrationDialog'
 import { StepExportDialog } from './StepExportDialog'
@@ -26,6 +27,8 @@ export function ModuleToolbar() {
   const [stepOpen, setStepOpen] = useState(false)
   const [illustrationOpen, setIllustrationOpen] = useState(false)
   const [buildOpen, setBuildOpen] = useState(false)
+  const [describeOpen, setDescribeOpen] = useState(false)
+  const [buildInitial, setBuildInitial] = useState<{ text: string; name?: string }>()
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-1 overflow-x-auto bg-slate-800 px-2 text-white sm:px-3">
@@ -77,6 +80,12 @@ export function ModuleToolbar() {
         label="示意圖"
         items={[
           {
+            label: '依敘述產生（AI）…',
+            hint: '用文字描述要的模組（不用知道型號），AI 判斷零件、自動組裝並產生示意圖',
+            onSelect: () => setDescribeOpen(true),
+            disabled: mode === 'simulate',
+          },
+          {
             label: '依型號清單組裝並產生…',
             hint: '輸入型號與數量，自動組好模組、檢查搭配，再產生示意圖',
             onSelect: () => setBuildOpen(true),
@@ -108,11 +117,26 @@ export function ModuleToolbar() {
       {listOpen && <ModuleList onClose={() => setListOpen(false)} />}
       {drawingOpen && <DrawingDialog onClose={() => openDrawing(false)} />}
       {stepOpen && <StepExportDialog onClose={() => setStepOpen(false)} />}
+      {describeOpen && (
+        <DescribeDialog
+          onClose={() => setDescribeOpen(false)}
+          onBuild={(text, name) => {
+            setDescribeOpen(false)
+            setBuildInitial({ text, name })
+            setBuildOpen(true)
+          }}
+        />
+      )}
       {buildOpen && (
         <BuildFromListDialog
-          onClose={() => setBuildOpen(false)}
+          initial={buildInitial}
+          onClose={() => {
+            setBuildOpen(false)
+            setBuildInitial(undefined)
+          }}
           onIllustrate={() => {
             setBuildOpen(false)
+            setBuildInitial(undefined)
             setIllustrationOpen(true)
           }}
         />

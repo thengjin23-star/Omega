@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { BACKUP_EXT, LIBRARY_EXT, MODULE_EXT } from '../catalog/archive'
 import { downloadBackup, restoreFromFile } from '../settings/backup'
 import { useSettingsStore, type AppSettings } from '../settings/settings'
+import { AiSettingsSection } from './AiSettingsSection'
 import { Button, Dialog } from './ui'
 
 const inputClass = 'mt-0.5 h-8 w-full rounded-md border border-slate-300 px-2 text-sm text-slate-800'
@@ -165,6 +166,8 @@ function SettingsDialogImpl({ onClose }: { onClose: () => void }) {
             </label>
           </div>
         </section>
+
+        <AiSettingsSection />
 
         <section>
           <h3 className={sectionTitle}>資料與備份</h3>

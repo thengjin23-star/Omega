@@ -1,4 +1,6 @@
-import { useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { interpretCodes } from '../ai/aiActions'
+import { aiReady, useAiSettings } from '../ai/aiSettings'
 import { parsePartsList, productIndex, type PartsListEntry } from '../assembly/partsList'
 import { genericFromCode } from '../catalog/generic/genericParts'
 import { decodeModelCode } from '../catalog/makerCodes'
@@ -58,20 +60,33 @@ const hintText = (hint: PartsListEntry['hint']) =>
 /**
  * 依型號清單組裝：貼上要用的型號與數量，系統自動在 3D 組好模組，檢查搭配並提醒，再產生示意圖。
  */
-export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => void; onIllustrate: () => void }) {
+export function BuildFromListDialog({
+  onClose,
+  onIllustrate,
+  initial,
+}: {
+  onClose: () => void
+  onIllustrate: () => void
+  /** 由「依敘述產生」帶入的清單：直接組裝 */
+  initial?: { text: string; name?: string }
+}) {
   const doc = useModuleStore((s) => s.doc)
   const products = useModuleStore((s) => s.products)
   const busy = useModuleStore((s) => s.busy)
   const { buildFromList, requestFit } = useModuleStore.getState()
   const fromList = doc.partsList !== undefined
   const manual = doc.instances.length > 0 && !fromList
-  const [text, setText] = useState(doc.partsList ?? '')
-  const [name, setName] = useState(manual ? '' : doc.name)
+  const [text, setText] = useState(initial?.text ?? doc.partsList ?? '')
+  const [name, setName] = useState(initial?.name ?? (manual ? '' : doc.name))
   const [customer, setCustomer] = useState(manual ? '' : (doc.customer ?? ''))
   const [outcome, setOutcome] = useState<BuildOutcome | undefined>()
   const [building, setBuilding] = useState(false)
   const [useGeneric, setUseGeneric] = useState(true)
-  const aiReady = false
+  const ai = useAiSettings()
+  const aiOn = aiReady(ai)
+  useEffect(() => {
+    void ai.load()
+  }, [ai])
   const listId = useId()
 
   const library = useMemo(() => Object.values(products), [products])
@@ -79,7 +94,7 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
   const parsed = useMemo(() => parsePartsList(text, index.isCode), [text, index])
   const rows = parsed.entries.map((e) => {
     const product = index.find(e.code)
-    return { entry: e, product, status: rowStatus(e, product, index, { on: useGeneric, ai: aiReady }) }
+    return { entry: e, product, status: rowStatus(e, product, index, { on: useGeneric, ai: aiOn }) }
   })
   const usable = rows.filter((r) => r.status.level !== 'error')
   const total = usable.reduce((n, r) => n + r.entry.qty, 0)
@@ -97,13 +112,23 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
   const build = async () => {
     setBuilding(true)
     try {
-      setOutcome(await buildFromList(text, { name: name.trim(), customer: customer.trim(), generic: useGeneric }))
+      setOutcome(await buildFromList(text, { name: name.trim(), customer: customer.trim(), generic: useGeneric, ...(useGeneric && aiOn && { interpret: interpretCodes }) }))
     } catch {
       /* 錯誤訊息由 store 顯示 */
     } finally {
       setBuilding(false)
     }
   }
+
+  // 由「依敘述產生」帶入：打開就組裝
+  const started = useRef(false)
+  useEffect(() => {
+    if (!initial || started.current) return
+    started.current = true
+    void build()
+    // 只在打開時執行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const locate = (instance: string) => {
     requestFit(instance)
