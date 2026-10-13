@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { WorkspaceTabs } from '../components/WorkspaceTabs'
 import { useSettingsStore } from '../settings/settings'
 import { useModuleStore } from './moduleStore'
+import { Menu } from '../components/Menu'
 import { BarButton, Button, Dialog } from '../components/ui'
+import { BuildFromListDialog } from './BuildFromListDialog'
 import { DrawingDialog } from './DrawingDialog'
 import { IllustrationDialog } from './IllustrationDialog'
 import { StepExportDialog } from './StepExportDialog'
@@ -23,6 +25,7 @@ export function ModuleToolbar() {
   const [listOpen, setListOpen] = useState(false)
   const [stepOpen, setStepOpen] = useState(false)
   const [illustrationOpen, setIllustrationOpen] = useState(false)
+  const [buildOpen, setBuildOpen] = useState(false)
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-1 overflow-x-auto bg-slate-800 px-2 text-white sm:px-3">
@@ -32,8 +35,8 @@ export function ModuleToolbar() {
         <BarButton label="產品庫" onClick={() => toggleDrawer('library')} aria-pressed={drawer === 'library'} />
         <BarButton label="屬性" onClick={() => toggleDrawer('inspector')} aria-pressed={drawer === 'inspector'} />
       </span>
-      <NameField key={`${doc.id}-name`} value={doc.name} placeholder="模組名稱" width="w-40" onCommit={(name) => renameModule({ name: name || '未命名模組' })} />
-      <NameField key={`${doc.id}-customer`} value={doc.customer ?? ''} placeholder="客戶" width="w-28" onCommit={(customer) => renameModule({ customer })} />
+      <NameField key={`${doc.id}-name-${doc.name}`} value={doc.name} placeholder="模組名稱" width="w-40" onCommit={(name) => renameModule({ name: name || '未命名模組' })} />
+      <NameField key={`${doc.id}-customer-${doc.customer ?? ''}`} value={doc.customer ?? ''} placeholder="客戶" width="w-28" onCommit={(customer) => renameModule({ customer })} />
       <div className="mx-1 h-6 w-px shrink-0 bg-white/15" />
       <BarButton label="新模組" onClick={newModule} />
       <BarButton label="開啟…" onClick={() => setListOpen(true)} />
@@ -70,11 +73,22 @@ export function ModuleToolbar() {
       />
       <BarButton label="對準選取" onClick={() => requestFit(selected)} disabled={!selected} title="縮放到選取的零件" />
       <BarButton label="產生圖面" onClick={() => openDrawing(true)} disabled={doc.instances.length === 0} title="三視圖、零件表、標題欄：PDF／DXF／SVG" />
-      <BarButton
-        label="產生示意圖"
-        onClick={() => setIllustrationOpen(true)}
-        disabled={doc.instances.length === 0 || mode === 'simulate'}
-        title="著色的 3D 圖，標上每個零件的型號與箭頭：PNG／複製圖片／PDF（給研發申請、報價附圖）"
+      <Menu
+        label="示意圖"
+        items={[
+          {
+            label: '依型號清單組裝並產生…',
+            hint: '輸入型號與數量，自動組好模組、檢查搭配，再產生示意圖',
+            onSelect: () => setBuildOpen(true),
+            disabled: mode === 'simulate',
+          },
+          {
+            label: '用目前的模組產生…',
+            hint: '著色的 3D 圖，標上每個零件的型號與箭頭（PNG／PDF）',
+            onSelect: () => setIllustrationOpen(true),
+            disabled: doc.instances.length === 0 || mode === 'simulate',
+          },
+        ]}
       />
       <BarButton
         label="產生迴路圖"
@@ -94,7 +108,24 @@ export function ModuleToolbar() {
       {listOpen && <ModuleList onClose={() => setListOpen(false)} />}
       {drawingOpen && <DrawingDialog onClose={() => openDrawing(false)} />}
       {stepOpen && <StepExportDialog onClose={() => setStepOpen(false)} />}
-      {illustrationOpen && <IllustrationDialog onClose={() => setIllustrationOpen(false)} />}
+      {buildOpen && (
+        <BuildFromListDialog
+          onClose={() => setBuildOpen(false)}
+          onIllustrate={() => {
+            setBuildOpen(false)
+            setIllustrationOpen(true)
+          }}
+        />
+      )}
+      {illustrationOpen && (
+        <IllustrationDialog
+          onClose={() => setIllustrationOpen(false)}
+          onEditList={() => {
+            setIllustrationOpen(false)
+            setBuildOpen(true)
+          }}
+        />
+      )}
     </header>
   )
 }

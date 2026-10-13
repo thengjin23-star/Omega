@@ -21,6 +21,7 @@ import { today } from '../utils/date'
 import { downloadFile, safeFileName } from '../utils/download'
 import { FOOTER_HEIGHT, illustrationPng, measureLabel, paintIllustration, type IllustrationPaint } from './illustrationPaint'
 import { disposeIllustrationRenderer, illustrationItems, renderIllustration, type IllustrationItem, type RenderedIllustration } from './illustrationRender'
+import { AssemblyReport } from './AssemblyReport'
 import { useModuleStore } from './moduleStore'
 import { viewportDirection } from './viewportCamera'
 
@@ -67,7 +68,7 @@ interface Group {
  * 產生示意圖：模組的著色 3D 圖，旁邊標上每個零件的型號，箭頭指向零件（同型號一個標註、多條箭頭）。
  * 可拖曳標註調整位置；下載 PNG、複製圖片、或輸出含標題欄的 PDF。
  */
-export function IllustrationDialog({ onClose }: { onClose: () => void }) {
+export function IllustrationDialog({ onClose, onEditList }: { onClose: () => void; onEditList?: () => void }) {
   const doc = useModuleStore((s) => s.doc)
   const products = useModuleStore((s) => s.products)
   const meshes = useModuleStore((s) => s.meshes)
@@ -482,6 +483,22 @@ export function IllustrationDialog({ onClose }: { onClose: () => void }) {
         </form>
 
         <section className="flex min-h-[50vh] min-w-0 flex-1 flex-col gap-2 lg:min-h-0">
+          <div className="flex flex-wrap items-start gap-2 rounded-md border border-slate-200 px-2.5 py-2">
+            <div className="min-w-0 flex-1">
+              <AssemblyReport
+                collapsible
+                onLocate={(id) => {
+                  useModuleStore.getState().requestFit(id)
+                  onClose()
+                }}
+              />
+            </div>
+            {doc.partsList !== undefined && onEditList && (
+              <Button size="sm" onClick={onEditList} title="回到型號清單，修改後重新組裝">
+                修改型號清單
+              </Button>
+            )}
+          </div>
           {notes.length > 0 && (
             <ul className="space-y-1 text-xs">
               {notes.map((n) => (
