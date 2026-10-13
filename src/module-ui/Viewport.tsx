@@ -14,6 +14,7 @@ import { DimensionLines, MeasureOverlay } from './Measure'
 import { PortMarker } from './PortMarker'
 import { TubeView } from './TubeView'
 import { cylinderMotion, interactionOf, meshCenter, useSimPiston, useSimSignalChip, useSimValveActive } from './simulation'
+import { ViewportCameraBridge } from './viewportCamera'
 
 const DEFAULT_COLOR = new Color('#b9c1c9')
 
@@ -273,6 +274,7 @@ export function Viewport() {
       <MeasureOverlay />
       <DimensionLines />
       <FitController root={root} />
+      <ViewportCameraBridge />
       <TestHook />
     </Canvas>
   )

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { bomColumns, bomTotal, buildBom } from '../assembly/bom'
 import { formatMoney } from '../utils/money'
 import { suggestPartners } from '../assembly/memory'
+import { attachmentBranches } from '../assembly/copyAttachments'
 import { estimateTubeLengthOf, getPort, mateChecks, mateRotation, usedPorts } from '../assembly/moduleOps'
 import { useLibraryStore } from '../catalog/library'
 import { effectivePneumatic, isCircuitType, pneumaticTypeLabel } from '../catalog/pneumatic'
@@ -188,7 +189,7 @@ function PartTab() {
   )
 }
 
-/** 零件的快速操作：自動配上常用零件、更換零件、複製 */
+/** 零件的快速操作：自動配上常用零件、更換零件、複製、套用到相同零件 */
 function PartActions({ instanceId, product }: { instanceId: string; product: Product }) {
   const doc = useModuleStore((s) => s.doc)
   const products = useModuleStore((s) => s.products)
@@ -196,6 +197,10 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
   const autoFill = useModuleStore((s) => s.autoFill)
   const duplicateSelected = useModuleStore((s) => s.duplicateSelected)
   const [replacing, setReplacing] = useState(false)
+  const applyToSameParts = useModuleStore((s) => s.applyToSameParts)
+  // 模組中還有幾個相同的零件、這個零件上接了幾串零件（可以照樣套用）
+  const same = useMemo(() => doc.instances.filter((i) => i.productId === product.id && i.id !== instanceId).length, [doc.instances, product.id, instanceId])
+  const branches = useMemo(() => (same ? attachmentBranches(doc, instanceId).length : 0), [doc, instanceId, same])
   // 有幾個空著的埠有搭配記錄
   const fillable = useMemo(() => {
     const used = usedPorts(doc)
@@ -223,6 +228,20 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
         <Button size="sm" onClick={() => void duplicateSelected()}>
           複製
         </Button>
+        {same > 0 && (
+          <Button
+            size="sm"
+            disabled={!branches}
+            onClick={() => applyToSameParts(instanceId)}
+            title={
+              branches
+                ? `把接在這個零件上的 ${branches} 組零件（接頭、消音器…），照樣接到其他 ${same} 個相同零件的同一個埠`
+                : '這個零件上還沒有接零件：先接好一個，再套用到其他相同零件'
+            }
+          >
+            套用到其他 {same} 個相同零件
+          </Button>
+        )}
       </div>
       {replacing && <ReplaceDialog instanceId={instanceId} current={product} onClose={() => setReplacing(false)} />}
     </section>

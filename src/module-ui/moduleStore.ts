@@ -5,8 +5,9 @@ import { findAdapters, insertAdapter, type AdapterOption } from '../assembly/ada
 import { mateStatKeys, suggestPartners, type Suggestion } from '../assembly/memory'
 import { bomToCsv, buildBom } from '../assembly/bom'
 import * as ops from '../assembly/moduleOps'
+import { copyAttachments } from '../assembly/copyAttachments'
 import { isTubeSocket } from '../assembly/tubes'
-import type { DrawingInfo, ModuleDoc, ModuleInstance, ModuleTube, PortRef } from '../assembly/types'
+import type { DrawingInfo, IllustrationInfo, ModuleDoc, ModuleInstance, ModuleTube, PortRef } from '../assembly/types'
 import { deriveModuleCircuit, type ModuleCircuit } from '../assembly/moduleCircuit'
 import { ensureModuleSignals } from '../assembly/moduleSignals'
 import {
@@ -133,6 +134,8 @@ interface State {
   addAndConnect(productId: string, portId: string): Promise<void>
   /** 把選取零件所有空著的埠，接上以前最常搭配的零件（一步復原） */
   autoFill(instanceId: string): Promise<void>
+  /** 把接在這個零件上的零件，照樣接到其他相同零件的同一個埠 */
+  applyToSameParts(instanceId: string): void
   /** 更換零件的產品，盡量保留原本的鎖合 */
   replaceInstanceProduct(instanceId: string, productId: string): Promise<void>
   /** 複製選取的零件（不含鎖合） */
@@ -192,6 +195,8 @@ interface State {
   simulationInteract(nodeId: string, action?: InteractAction): void
   /** 圖面設定（圖號、版次、選項）：記在模組裡，不列入復原歷史 */
   setDrawingInfo(patch: Partial<DrawingInfo>): void
+  /** 示意圖設定（不列入復原） */
+  setIllustration(patch: Partial<IllustrationInfo>): void
   /** 修改零件在模組中的參數（訊號名稱、負載…）；值為 undefined 時移除該參數 */
   setInstanceParams(instanceId: string, patch: Readonly<Record<string, ParamValue | undefined>>): void
   /** 補上缺少的訊號名稱（氣缸代號、線圈輸出），不列入復原歷史 */
@@ -710,6 +715,24 @@ export const useModuleStore = create<State>()((set, get) => {
       }
     },
 
+    applyToSameParts(instanceId) {
+      const { doc, products } = get()
+      const product = products[doc.instances.find((i) => i.id === instanceId)?.productId ?? '']
+      if (!product) return
+      const r = copyAttachments(doc, products, instanceId)
+      if (!r.added) {
+        info(
+          !r.branches
+            ? '這個零件上還沒有接零件（接頭、消音器…）：先接好一個，再套用到其他相同零件。'
+            : '其他相同零件對應的埠都已經接了零件。',
+        )
+        return
+      }
+      commit(r.doc)
+      for (const m of r.doc.mates.filter((x) => !doc.mates.some((y) => y.id === x.id))) void recordMate(r.doc, m.parent, m.child)
+      info(`已套用到其他 ${r.targets} 個「${product.modelCode}」：加入 ${r.added} 個零件${r.skipped ? `；${r.skipped} 個埠已經有零件，略過` : ''}`)
+    },
+
     async replaceInstanceProduct(instanceId, productId) {
       const product = get().products[productId]
       if (!product) return
@@ -1099,6 +1122,12 @@ export const useModuleStore = create<State>()((set, get) => {
     setDrawingInfo(patch) {
       const { doc } = get()
       set({ doc: { ...doc, drawing: { ...doc.drawing, ...patch }, updatedAt: Date.now() }, saved: false })
+      scheduleSave()
+    },
+
+    setIllustration(patch) {
+      const { doc } = get()
+      set({ doc: { ...doc, illustration: { ...doc.illustration, ...patch }, updatedAt: Date.now() }, saved: false })
       scheduleSave()
     },
 

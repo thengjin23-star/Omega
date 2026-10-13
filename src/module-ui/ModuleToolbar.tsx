@@ -4,6 +4,7 @@ import { useSettingsStore } from '../settings/settings'
 import { useModuleStore } from './moduleStore'
 import { BarButton, Button, Dialog } from '../components/ui'
 import { DrawingDialog } from './DrawingDialog'
+import { IllustrationDialog } from './IllustrationDialog'
 import { StepExportDialog } from './StepExportDialog'
 import { generateCircuitFromModule } from './generateCircuit'
 
@@ -21,6 +22,7 @@ export function ModuleToolbar() {
   const { newModule, undo, redo, requestFit, exportModuleFile, renameModule, toggleDrawer, setMode, openDrawing, toggleSequencePanel } = useModuleStore.getState()
   const [listOpen, setListOpen] = useState(false)
   const [stepOpen, setStepOpen] = useState(false)
+  const [illustrationOpen, setIllustrationOpen] = useState(false)
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-1 overflow-x-auto bg-slate-800 px-2 text-white sm:px-3">
@@ -69,6 +71,12 @@ export function ModuleToolbar() {
       <BarButton label="對準選取" onClick={() => requestFit(selected)} disabled={!selected} title="縮放到選取的零件" />
       <BarButton label="產生圖面" onClick={() => openDrawing(true)} disabled={doc.instances.length === 0} title="三視圖、零件表、標題欄：PDF／DXF／SVG" />
       <BarButton
+        label="產生示意圖"
+        onClick={() => setIllustrationOpen(true)}
+        disabled={doc.instances.length === 0 || mode === 'simulate'}
+        title="著色的 3D 圖，標上每個零件的型號與箭頭：PNG／複製圖片／PDF（給研發申請、報價附圖）"
+      />
+      <BarButton
         label="產生迴路圖"
         onClick={() => {
           const error = generateCircuitFromModule()
@@ -86,6 +94,7 @@ export function ModuleToolbar() {
       {listOpen && <ModuleList onClose={() => setListOpen(false)} />}
       {drawingOpen && <DrawingDialog onClose={() => openDrawing(false)} />}
       {stepOpen && <StepExportDialog onClose={() => setStepOpen(false)} />}
+      {illustrationOpen && <IllustrationDialog onClose={() => setIllustrationOpen(false)} />}
     </header>
   )
 }
