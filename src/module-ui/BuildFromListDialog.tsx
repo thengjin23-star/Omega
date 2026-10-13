@@ -1,5 +1,7 @@
 import { useId, useMemo, useState } from 'react'
 import { parsePartsList, productIndex, type PartsListEntry } from '../assembly/partsList'
+import { genericFromCode } from '../catalog/generic/genericParts'
+import { decodeModelCode } from '../catalog/makerCodes'
 import { hasModel, type Product } from '../catalog/types'
 import { Button, Dialog } from '../components/ui'
 import { AssemblyReport } from './AssemblyReport'
@@ -23,11 +25,27 @@ DEMO-BUSH-R14-RC18 → P
 DEMO-FITTING-R18-D6 → DEMO-BUSH-R14-RC18
 DEMO-SILENCER-R18 ×2 → EA、EB`
 
-type RowStatus = { level: 'ok' | 'warn' | 'error'; text: string; similar?: Product[] }
+type RowStatus = { level: 'ok' | 'generic' | 'warn' | 'error'; text: string; similar?: Product[] }
 
-function rowStatus(entry: PartsListEntry, product: Product | undefined, index: ReturnType<typeof productIndex>): RowStatus {
+/** 型號規則認得、可以產生通用 3D 的名稱 */
+const genericName = (code: string) => {
+  const info = decodeModelCode(code)
+  return info && genericFromCode(info) ? info.name : undefined
+}
+
+function rowStatus(
+  entry: PartsListEntry,
+  product: Product | undefined,
+  index: ReturnType<typeof productIndex>,
+  generic: { on: boolean; ai: boolean },
+): RowStatus {
+  if (!product || !hasModel(product)) {
+    const known = generic.on && genericName(product?.modelCode ?? entry.code)
+    if (known) return { level: 'generic', text: `${product ? '沒有 3D 檔' : '產品庫沒有'}：會產生通用 3D（${known}）` }
+    if (generic.on && generic.ai) return { level: 'generic', text: `${product ? '沒有 3D 檔' : '產品庫沒有'}：會請 AI 判斷規格，再產生通用 3D`, similar: product ? undefined : index.similar(entry.code) }
+  }
   if (!product) return { level: 'error', text: '產品庫找不到這個型號', similar: index.similar(entry.code) }
-  if (!hasModel(product)) return { level: 'error', text: '沒有 3D 檔：請先在產品庫匯入' }
+  if (!hasModel(product)) return { level: 'error', text: '沒有 3D 檔：請先在產品庫匯入，或勾選「自動產生通用 3D」' }
   if (!product.ports.length) return { level: 'warn', text: '還沒有設定埠：無法自動接上' }
   if (!product.ports.some((p) => p.spec)) return { level: 'warn', text: '埠沒有規格：無法判斷接在哪' }
   if (entry.hint?.target && !index.find(entry.hint.target)) return { level: 'warn', text: `指定的「${entry.hint.target}」找不到` }
@@ -52,6 +70,8 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
   const [customer, setCustomer] = useState(manual ? '' : (doc.customer ?? ''))
   const [outcome, setOutcome] = useState<BuildOutcome | undefined>()
   const [building, setBuilding] = useState(false)
+  const [useGeneric, setUseGeneric] = useState(true)
+  const aiReady = false
   const listId = useId()
 
   const library = useMemo(() => Object.values(products), [products])
@@ -59,7 +79,7 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
   const parsed = useMemo(() => parsePartsList(text, index.isCode), [text, index])
   const rows = parsed.entries.map((e) => {
     const product = index.find(e.code)
-    return { entry: e, product, status: rowStatus(e, product, index) }
+    return { entry: e, product, status: rowStatus(e, product, index, { on: useGeneric, ai: aiReady }) }
   })
   const usable = rows.filter((r) => r.status.level !== 'error')
   const total = usable.reduce((n, r) => n + r.entry.qty, 0)
@@ -77,7 +97,7 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
   const build = async () => {
     setBuilding(true)
     try {
-      setOutcome(await buildFromList(text, { name: name.trim(), customer: customer.trim() }))
+      setOutcome(await buildFromList(text, { name: name.trim(), customer: customer.trim(), generic: useGeneric }))
     } catch {
       /* 錯誤訊息由 store 顯示 */
     } finally {
@@ -151,6 +171,12 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
             <li>．指定埠：「→ A、B」「@ EA」「接在 型號 的 P」；沒指定時依規格與以前的搭配自動決定（排氣口優先接消音器）</li>
             <li>．「#」後面是備註；Excel 的表格可以直接貼上</li>
           </ul>
+          <label className="flex items-start gap-2 text-xs leading-5 text-slate-600">
+            <input type="checkbox" className="mt-1" checked={useGeneric} onChange={(e) => setUseGeneric(e.target.checked)} />
+            <span>
+              產品庫沒有、或沒有 3D 檔的型號：<strong>自動產生通用 3D</strong>（依型號判斷種類與尺寸的示意模型，埠已定義好）
+            </span>
+          </label>
           {manual && (
             <p className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-800">目前的模組是手動組的，會保留不動，另外開一個新模組。</p>
           )}
@@ -183,8 +209,10 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
                       <td className="py-1 font-mono text-slate-800">{product?.modelCode ?? entry.code}</td>
                       <td className="py-1 text-right">{entry.qty}</td>
                       <td className="py-1 pl-3 font-mono text-slate-600">{hintText(entry.hint)}</td>
-                      <td className={`py-1 pl-3 ${status.level === 'error' ? 'text-red-700' : status.level === 'warn' ? 'text-amber-800' : 'text-slate-600'}`}>
-                        {status.level === 'ok' ? '✓ ' : status.level === 'warn' ? '! ' : '✕ '}
+                      <td
+                        className={`py-1 pl-3 ${status.level === 'error' ? 'text-red-700' : status.level === 'warn' ? 'text-amber-800' : status.level === 'generic' ? 'text-blue-700' : 'text-slate-600'}`}
+                      >
+                        {status.level === 'ok' ? '✓ ' : status.level === 'warn' ? '! ' : status.level === 'generic' ? '◇ ' : '✕ '}
                         {status.text}
                         {status.similar && status.similar.length > 0 && (
                           <span className="ml-1 inline-flex flex-wrap gap-1">
@@ -225,6 +253,17 @@ export function BuildFromListDialog({ onClose, onIllustrate }: { onClose: () => 
                 {problems ? `；${problems} 項沒有放進模組：` : '，清單上的零件都接上了。'}
               </p>
               <ul className="space-y-1.5 text-xs">
+                {outcome.generated.map((g) => (
+                  <li key={`gen${g.line}${g.code}`} className="rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-blue-800" data-outcome="generated">
+                    ◇ 第 {g.line} 行 <span className="font-mono">{g.code}</span>：沒有原廠 3D 檔，已用通用 3D 產生（{g.name}
+                    {g.by === 'ai' ? '，AI 判斷' : ''}）
+                  </li>
+                ))}
+                {outcome.aiError && (
+                  <li className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-amber-800" data-outcome="ai-error">
+                    ! AI 判斷失敗：{outcome.aiError}
+                  </li>
+                )}
                 {outcome.notFound.map((n) => (
                   <li key={`nf${n.line}${n.code}`} className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-red-700" data-outcome="not-found">
                     ✕ 第 {n.line} 行「{n.code}」產品庫找不到{n.similar.length > 0 && `（相近：${n.similar.join('、')}）`}

@@ -2,6 +2,9 @@ import { useMemo, useRef, useState } from 'react'
 import { useLibraryStore } from '../catalog/library'
 import { CATEGORY_LABEL, hasModel, type Product, type ProductCategory } from '../catalog/types'
 import { NewProductDialog } from '../components/NewProductDialog'
+import { genericFromCode } from '../catalog/generic/genericParts'
+import { decodeModelCode } from '../catalog/makerCodes'
+import { GenericPartDialog } from './GenericPartDialog'
 import { Button, LevelBadge } from '../components/ui'
 import { formatSpecShort } from '../threads'
 import { portLabel } from './labels'
@@ -37,6 +40,7 @@ export function LibraryPanel() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<ProductCategory | 'all'>('all')
   const [creating, setCreating] = useState(false)
+  const [generic, setGeneric] = useState(false)
   const suggestions = useSuggestions()
   const doc = useModuleStore((s) => s.doc)
   const addAndConnect = useModuleStore((s) => s.addAndConnect)
@@ -64,6 +68,15 @@ export function LibraryPanel() {
   const onPick = (p: Product) => {
     if (hasModel(p)) {
       void addProductToModule(p.id)
+      return
+    }
+    const info = decodeModelCode(p.modelCode)
+    const spec = info && genericFromCode(info)
+    if (spec && window.confirm(`「${p.modelCode}」還沒有 3D 檔。要用通用 3D（依型號產生的示意模型，埠已定義好）代替嗎？\n按「取消」則改為選擇 STEP／IGES 檔。`)) {
+      void (async () => {
+        const [made] = await useModuleStore.getState().createGenericParts([{ spec, productId: p.id, name: p.name || info.name, maker: info.maker }])
+        await addProductToModule(made.id)
+      })()
       return
     }
     if (!window.confirm(`「${p.modelCode}」還沒有 3D 檔。要現在選擇 STEP／IGES 檔附加上去嗎？`)) return
@@ -121,6 +134,9 @@ export function LibraryPanel() {
             匯出產品庫
           </Button>
         </div>
+        <Button size="sm" variant="ghost" className="w-full" onClick={() => setGeneric(true)} title="沒有原廠 3D 檔或沒有型號：依種類與尺寸產生示意模型（埠已定義好）">
+          ＋ 產生通用 3D 零件
+        </Button>
         <Button size="sm" variant="ghost" className="w-full" onClick={() => setCreating(true)}>
           ＋ 新增產品（無 3D 檔）
         </Button>
@@ -248,6 +264,7 @@ export function LibraryPanel() {
         也可以直接把 STEP 檔拖進 3D 畫面。產品與埠記在這台電腦的瀏覽器裡，請定期在「設定」下載完整備份。
       </p>
       {creating && <NewProductDialog onClose={() => setCreating(false)} />}
+      {generic && <GenericPartDialog onClose={() => setGeneric(false)} />}
     </aside>
   )
 }
