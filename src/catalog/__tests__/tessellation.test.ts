@@ -22,13 +22,14 @@ describe('讀取 STEP（occt-import-js）', () => {
 
   it('保留零件名稱與顏色、單位為 mm（外形尺寸與建模參數一致）', async () => {
     const t = await load('DEMO-VALVE-52-01.step')
-    expect(t.parts.map((p) => p.name)).toEqual(['BODY', 'SOLENOID'])
+    expect(t.parts.map((p) => p.name)).toEqual(['BODY', 'SOLENOID', 'SOLENOID-CONNECTOR', 'MANUAL'])
     expect(t.parts[1].color).not.toBeNull()
-    expect(t.bbox.min[0]).toBeCloseTo(-35, 1)
-    expect(t.bbox.max[0]).toBeCloseTo(62, 1)
+    // 本體長 50（-25～25），-X 端的手動按鈕凸出 2，+X 端的線圈長 27.5
+    expect(t.bbox.min[0]).toBeCloseTo(-27, 1)
+    expect(t.bbox.max[0]).toBeCloseTo(52.5, 1)
     expect(t.bbox.min[2]).toBeCloseTo(0, 1)
-    // 本體頂面 z = 34，電磁線圈上的手動按鈕到 z = 35
-    expect(t.bbox.max[2]).toBeCloseTo(35, 1)
+    // 本體頂面 z = 26，線圈上的接線盒到 z = 26 × 1.47
+    expect(t.bbox.max[2]).toBeCloseTo(38.22, 1)
   })
 
   it('faceOfTriangle 以二分搜尋找到三角形所屬的面', async () => {

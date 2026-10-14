@@ -21,13 +21,45 @@ function placements(doc: ModuleDoc) {
 const on = (doc: ModuleDoc, host: string, port: string) => placements(doc).filter((p) => p.startsWith(`${host}.${port}←`)).map((p) => p.split('←')[1])
 
 describe('autoAssemble', () => {
-  it('閥島：集裝座當底座，閥裝在站位，接頭依指定埠，轉接頭＋接頭串接，消音器到排氣口', () => {
+  it('亞德客式閥島：閥橫跨在集裝座站位上，A／B 接頭在閥上，P 接頭與消音器在集裝座端面', () => {
+    // 與「依清單組裝」的範例清單相同：P 與消音器沒有指定零件，閥底面的 P／EA／EB 裝上後已封住，只剩集裝座的
     const r = autoAssemble(
       [
-        item('DEMO-VALVE-VB', 4),
+        item('DEMO-MANIFOLD-4'),
+        item('DEMO-VALVE-52-01', 4),
         item('DEMO-FITTING-R18-D6', 4, { ports: ['A'] }),
         item('DEMO-FITTING-R18-D4', 4, { ports: ['B'] }),
-        item('DEMO-MANIFOLD-4'),
+        item('DEMO-FITTING-R18-D6', 1, { ports: ['P'] }),
+        item('DEMO-SILENCER-R18', 2, { ports: ['EA', 'EB'] }),
+      ],
+      PRODUCTS,
+      { name: '閥島' },
+    )
+    expect(r.leftovers).toEqual([])
+    expect(r.roots).toHaveLength(1)
+    expect(r.doc.instances.find((i) => i.id === r.roots[0])!.productId).toBe('DEMO-MANIFOLD-4')
+    expect(r.doc.instances).toHaveLength(16)
+    for (const st of ['站1', '站2', '站3', '站4']) expect(on(r.doc, 'DEMO-MANIFOLD-4', st)).toEqual(['DEMO-VALVE-52-01'])
+    expect(on(r.doc, 'DEMO-VALVE-52-01', 'A')).toEqual(Array(4).fill('DEMO-FITTING-R18-D6'))
+    expect(on(r.doc, 'DEMO-VALVE-52-01', 'B')).toEqual(Array(4).fill('DEMO-FITTING-R18-D4'))
+    expect(on(r.doc, 'DEMO-VALVE-52-01', 'P')).toEqual([])
+    expect(on(r.doc, 'DEMO-MANIFOLD-4', 'P')).toEqual(['DEMO-FITTING-R18-D6'])
+    expect(on(r.doc, 'DEMO-MANIFOLD-4', 'EA')).toEqual(['DEMO-SILENCER-R18'])
+    expect(on(r.doc, 'DEMO-MANIFOLD-4', 'EB')).toEqual(['DEMO-SILENCER-R18'])
+    expect(mateChecks(r.doc, PRODUCTS).every((c) => c.result.level === 'ok')).toBe(true)
+    // 閥底面的埠由集裝座封住，不算空著
+    const report = moduleReport(r.doc, PRODUCTS)
+    expect(report.filter((x) => x.level !== 'info')).toEqual([])
+    expect(report.map((x) => x.title)).toEqual(['快插口 Ø6 快插 × 5、Ø4 快插 × 4 空著'])
+  })
+
+  it('底板式閥島：集裝座當底座，閥裝在站位，接頭依指定埠，轉接頭＋接頭串接，消音器到排氣口', () => {
+    const r = autoAssemble(
+      [
+        item('SUBBASE-VALVE-VB', 4),
+        item('DEMO-FITTING-R18-D6', 4, { ports: ['A'] }),
+        item('DEMO-FITTING-R18-D4', 4, { ports: ['B'] }),
+        item('SUBBASE-MANIFOLD-4'),
         item('DEMO-BUSH-R14-RC18'),
         item('DEMO-FITTING-R18-D6', 1, { target: 'DEMO-BUSH-R14-RC18', ports: [] }),
         item('DEMO-SILENCER-R18', 2),
@@ -37,17 +69,17 @@ describe('autoAssemble', () => {
     )
     expect(r.leftovers).toEqual([])
     expect(r.roots).toHaveLength(1)
-    expect(r.doc.instances.find((i) => i.id === r.roots[0])!.productId).toBe('DEMO-MANIFOLD-4')
+    expect(r.doc.instances.find((i) => i.id === r.roots[0])!.productId).toBe('SUBBASE-MANIFOLD-4')
     expect(r.doc.instances).toHaveLength(17)
-    for (const st of ['站1', '站2', '站3', '站4']) expect(on(r.doc, 'DEMO-MANIFOLD-4', st)).toEqual(['DEMO-VALVE-VB'])
+    for (const st of ['站1', '站2', '站3', '站4']) expect(on(r.doc, 'SUBBASE-MANIFOLD-4', st)).toEqual(['SUBBASE-VALVE-VB'])
     for (const n of [1, 2, 3, 4]) {
-      expect(on(r.doc, 'DEMO-MANIFOLD-4', `A${n}`)).toEqual(['DEMO-FITTING-R18-D6'])
-      expect(on(r.doc, 'DEMO-MANIFOLD-4', `B${n}`)).toEqual(['DEMO-FITTING-R18-D4'])
+      expect(on(r.doc, 'SUBBASE-MANIFOLD-4', `A${n}`)).toEqual(['DEMO-FITTING-R18-D6'])
+      expect(on(r.doc, 'SUBBASE-MANIFOLD-4', `B${n}`)).toEqual(['DEMO-FITTING-R18-D4'])
     }
-    expect(on(r.doc, 'DEMO-MANIFOLD-4', 'P')).toEqual(['DEMO-BUSH-R14-RC18'])
+    expect(on(r.doc, 'SUBBASE-MANIFOLD-4', 'P')).toEqual(['DEMO-BUSH-R14-RC18'])
     expect(on(r.doc, 'DEMO-BUSH-R14-RC18', '2')).toEqual(['DEMO-FITTING-R18-D6'])
-    expect(on(r.doc, 'DEMO-MANIFOLD-4', 'EA')).toEqual(['DEMO-SILENCER-R18'])
-    expect(on(r.doc, 'DEMO-MANIFOLD-4', 'EB')).toEqual(['DEMO-SILENCER-R18'])
+    expect(on(r.doc, 'SUBBASE-MANIFOLD-4', 'EA')).toEqual(['DEMO-SILENCER-R18'])
+    expect(on(r.doc, 'SUBBASE-MANIFOLD-4', 'EB')).toEqual(['DEMO-SILENCER-R18'])
     // 所有搭配都正確
     expect(mateChecks(r.doc, PRODUCTS).every((c) => c.result.level === 'ok')).toBe(true)
     // 檢查：沒有問題，只有快插口的說明
@@ -85,8 +117,8 @@ describe('autoAssemble', () => {
   })
 
   it('指定的零件不在清單中', () => {
-    const r = autoAssemble([item('DEMO-VALVE-52-01'), item('DEMO-SILENCER-R18', 1, { target: 'DEMO-MANIFOLD-4', ports: ['EA'] })], PRODUCTS)
-    expect(r.leftovers[0].reason).toContain('DEMO-MANIFOLD-4')
+    const r = autoAssemble([item('DEMO-VALVE-52-01'), item('DEMO-SILENCER-R18', 1, { target: 'SUBBASE-MANIFOLD-4', ports: ['EA'] })], PRODUCTS)
+    expect(r.leftovers[0].reason).toContain('SUBBASE-MANIFOLD-4')
   })
 
   it('指定埠的名稱比對', () => {

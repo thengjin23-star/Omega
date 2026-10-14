@@ -87,6 +87,11 @@ export async function installSamples(
       existing++
       continue
     }
+    // 範例改版（檔案內容不同）：舊版留著（模組可能用到），型號加註「舊版」以免與新版同名
+    if (status === 'new')
+      for (const old of await store.listProducts())
+        if (old.id !== product.id && old.modelCode === def.modelCode && old.source?.fileName === def.file)
+          await store.putProduct({ ...old, modelCode: `${def.modelCode}（舊版）`, updatedAt: Date.now() })
     const ports = portsFromDefs(def.ports)
     await store.putProduct({
       ...product,

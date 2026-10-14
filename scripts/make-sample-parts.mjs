@@ -45,28 +45,47 @@ const BOSS = { r18: 9.73, r14: 13.16, npt18: 10.29, m5: 5 }
 const parts = []
 function part(file, meta, shapes, ports) {
   const blob = exportSTEP(shapes.map(([shape, name, color]) => ({ shape, name, color })))
-  parts.push({ file, blob, meta: { file, ...meta, ports } })
+  const r3 = (v) => v.map((n) => Math.round(n * 1000) / 1000)
+  const rounded = ports.map((p) => ({ ...p, origin: r3(p.origin), axis: r3(p.axis), ...(p.ref && { ref: r3(p.ref) }) }))
+  parts.push({ file, blob, meta: { file, ...meta, ports: rounded } })
 }
 
-// ---------- 1. 管接式 5/2 電磁閥（Rc1/8） ----------
+// ---------- 1. 5/2 電磁閥（仿亞德客 4V110-06：A／B 在上面，P／EA／EB 在底面） ----------
+// 尺寸、埠與安裝面和通用零件的 100 系列相同（src/catalog/generic/buildGeneric.ts 的 valve()、manifold()），
+// 所以範例閥與通用閥都能裝在範例或通用的 100 系列集裝座上
+const V100 = { L: 50, W: 18, H: 26 }
+const MOUNT_100 = '安裝面：100 系列閥座'
+/** 安裝面原點偏離 P 口（閥的 -Y 側）；集裝座的站位用同樣的偏移 */
+const MOUNT_OFFSET_100 = V100.W / 2 - 3
 {
-  let body = box(-35, -11, 0, 35, 11, 34)
+  const { L, W, H } = V100
+  let body = box(-L / 2, -W / 2, 0, L / 2, W / 2, H)
   const ports = []
-  for (const [name, x] of [['A', -10], ['B', 10]]) {
-    body = drill(body, HOLE.rc18, 10, [x, 0, 34], [0, 0, 1])
-    ports.push({ name, spec: 'Rc1/8', shape: 'hole', origin: [x, 0, 34], axis: [0, 0, 1] })
+  for (const [name, x] of [['A', -0.13 * L], ['B', 0.13 * L]]) {
+    body = drill(body, HOLE.rc18, 9, [x, 0, H], [0, 0, 1])
+    ports.push({ name, spec: 'Rc1/8', shape: 'hole', origin: [x, 0, H], axis: [0, 0, 1] })
   }
-  for (const [name, x] of [['EA', -18], ['P', 0], ['EB', 18]]) {
-    body = drill(body, HOLE.rc18, 10, [x, -11, 17], [0, -1, 0])
-    ports.push({ name, spec: 'Rc1/8', shape: 'hole', origin: [x, -11, 17], axis: [0, -1, 0] })
+  // 底面的 P 與排氣口：閥裝在集裝座上時由安裝面封住（由集裝座供氣、排氣）；單獨使用時直接接接頭、消音器
+  for (const [name, x] of [['EA', -0.26 * L], ['P', 0], ['EB', 0.26 * L]]) {
+    body = drill(body, HOLE.rc18, 9, [x, 0, 0], [0, 0, -1])
+    ports.push({ name, spec: 'Rc1/8', shape: 'hole', origin: [x, 0, 0], axis: [0, 0, -1], sealedBy: '安裝面' })
   }
-  const solenoid = box(35, -10, 3, 62, 10, 31).fuse(cyl(6, 4, [48, 0, 31]))
+  for (const x of [-(L / 2 - 0.08 * L), L / 2 - 0.08 * L]) body = body.cut(cyl(3.4, H + 0.4, [x, 0, -0.2]))
+  ports.push({ name: '安裝面', spec: MOUNT_100, role: 'plug', shape: 'hole', origin: [0, -MOUNT_OFFSET_100, 0], axis: [0, 0, -1], ref: [1, 0, 0] })
+  // 線圈（+X 端）與接線盒、手動按鈕（-X 端）
+  const coilL = 0.55 * L
+  const cx = L / 2 + coilL / 2
+  const solenoid = box(L / 2, -W / 2 + 0.3, 0.1 * H, L / 2 + coilL, W / 2 - 0.3, 1.12 * H)
+  const connector = box(cx - 0.3 * W, -0.3 * W, 1.12 * H, cx + 0.3 * W, 0.3 * W, 1.47 * H)
+  const manual = cyl(0.25 * W, 2, [-L / 2, 0, 0.55 * H], [-1, 0, 0])
   part(
     'DEMO-VALVE-52-01.step',
-    { modelCode: 'DEMO-VALVE-52-01', name: '範例 5/2 電磁閥（管接式 Rc1/8）', category: 'valve', pneumatic: { type: 'valve52Single' } },
+    { modelCode: 'DEMO-VALVE-52-01', name: '範例 5/2 單電控電磁閥 Rc1/8（A／B 在上、P／排氣在底面）', category: 'valve', pneumatic: { type: 'valve52Single' } },
     [
       [body, 'BODY', METAL],
       [solenoid, 'SOLENOID', DARK],
+      [connector, 'SOLENOID-CONNECTOR', '#4b5563'],
+      [manual, 'MANUAL', '#f59e0b'],
     ],
     ports,
   )
@@ -193,55 +212,40 @@ function straightFitting(bossD, bossLen, hexAf, hexH, bodyD, socketD) {
   )
 }
 
-// ---------- 8. 集裝座 4 站 ----------
-const VB_KEY = '安裝面：DEMO-VB 閥座'
+// ---------- 8. 集裝座 4 站（仿亞德客 100M-4F：P／EA／EB 在端面，閥橫跨在上面，A／B 在閥上） ----------
 {
-  let base = box(0, -20, 0, 80, 20, 20)
+  const { L, W } = V100
+  const pitch = W + 2
+  const H = 22
+  const margin = 14
+  const length = margin + 4 * pitch + 6
+  const yEx = 0.26 * L
+  const lastX = margin + 3.5 * pitch
+  let base = box(0, -L / 2, 0, length, L / 2, H)
   const ports = []
-  for (let i = 0; i < 4; i++) {
-    const xc = 10 + 20 * i
-    base = drill(base, 5, 6, [xc, 0, 20], [0, 0, 1])
-    base = drill(base, 3.5, 5, [xc, -8, 20], [0, 0, 1])
-    base = drill(base, 3.5, 5, [xc, 8, 20], [0, 0, 1])
-    base = drill(base, HOLE.rc18, 10, [xc, -20, 10], [0, -1, 0])
-    base = drill(base, HOLE.rc18, 10, [xc, 20, 10], [0, 1, 0])
-    ports.push({ name: `站${i + 1}`, spec: VB_KEY, role: 'socket', shape: 'hole', origin: [xc, 0, 20], axis: [0, 0, 1] })
-    ports.push({ name: `A${i + 1}`, spec: 'Rc1/8', shape: 'hole', origin: [xc, -20, 10], axis: [0, -1, 0] })
-    ports.push({ name: `B${i + 1}`, spec: 'Rc1/8', shape: 'hole', origin: [xc, 20, 10], axis: [0, 1, 0] })
+  // 端面的 P、EA、EB，接到內部的供氣與排氣通道
+  for (const [name, y] of [['EA', -yEx], ['P', 0], ['EB', yEx]]) {
+    base = drill(base, HOLE.rc18, 9, [0, y, H / 2], [-1, 0, 0])
+    base = base.cut(cyl(HOLE.rc18 * 0.7, lastX + 2, [0.5, y, H / 2], [1, 0, 0]))
+    ports.push({ name, spec: 'Rc1/8', shape: 'hole', origin: [0, y, H / 2], axis: [-1, 0, 0] })
   }
-  base = drill(base, HOLE.rc14, 12, [0, 0, 10], [-1, 0, 0])
-  ports.push({ name: 'P', spec: 'Rc1/4', shape: 'hole', origin: [0, 0, 10], axis: [-1, 0, 0] })
-  for (const [name, y] of [['EA', -9], ['EB', 9]]) {
-    base = drill(base, HOLE.rc18, 10, [80, y, 10], [1, 0, 0])
-    ports.push({ name, spec: 'Rc1/8', shape: 'hole', origin: [80, y, 10], axis: [1, 0, 0] })
+  const slot = { w: HOLE.rc18 * 0.6, l: HOLE.rc18 * 0.9 }
+  for (let i = 0; i < 4; i++) {
+    const x = margin + pitch / 2 + i * pitch
+    // 每一站：通往三條通道的長孔開口、兩個固定閥的螺絲孔
+    for (const y of [-yEx, 0, yEx]) base = base.cut(box(x - slot.w / 2, y - slot.l / 2, H / 2, x + slot.w / 2, y + slot.l / 2, H + 0.2))
+    for (const y of [-(L / 2 - 0.08 * L), L / 2 - 0.08 * L]) base = drill(base, 3.3, 8, [x, y, H], [0, 0, 1])
+    ports.push({ name: `站${i + 1}`, spec: MOUNT_100, role: 'socket', shape: 'hole', origin: [x + MOUNT_OFFSET_100, 0, H], axis: [0, 0, 1], ref: [0, 1, 0] })
   }
   part(
     'DEMO-MANIFOLD-4.step',
-    { modelCode: 'DEMO-MANIFOLD-4', name: '範例集裝座 4 站（Rc1/8）', category: 'manifold', pneumatic: { type: 'manifold' } },
+    { modelCode: 'DEMO-MANIFOLD-4', name: '範例集裝座 4 站（100 系列，P／EA／EB Rc1/8 在端面）', category: 'manifold', pneumatic: { type: 'manifold' } },
     [[base, 'MANIFOLD', '#9aa5b1']],
     ports,
   )
 }
 
-// ---------- 9. 底板式電磁閥（裝在集裝座上） ----------
-{
-  let body = box(-9, -19, 0, 9, 19, 30)
-  body = drill(body, 5, 5, [0, 0, 0], [0, 0, -1])
-  body = drill(body, 3.5, 5, [0, -8, 0], [0, 0, -1])
-  body = drill(body, 3.5, 5, [0, 8, 0], [0, 0, -1])
-  const solenoid = box(-8, -17, 30, 8, -1, 48)
-  part(
-    'DEMO-VALVE-VB.step',
-    { modelCode: 'DEMO-VALVE-VB', name: '範例底板式電磁閥（集裝座用）', category: 'valve', pneumatic: { type: 'valve52Single' } },
-    [
-      [body, 'BODY', METAL],
-      [solenoid, 'SOLENOID', DARK],
-    ],
-    [{ name: '安裝面', spec: VB_KEY, role: 'plug', shape: 'hole', origin: [0, 0, 0], axis: [0, 0, -1] }],
-  )
-}
-
-// ---------- 10～12. 模組式三點組合（40 系列） ----------
+// ---------- 9～11. 模組式三點組合（40 系列） ----------
 const FRL_KEY = '安裝面：FRL-40 模組面'
 function frlHead() {
   let head = box(-20, -20, 0, 20, 20, 40)

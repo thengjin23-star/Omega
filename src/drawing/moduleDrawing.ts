@@ -103,6 +103,8 @@ export function collectModuleDrawing(
     }
     for (const port of product.ports) {
       if (used.has(`${inst.id}:${port.id}`)) continue
+      // 閥底面的安裝面沒有裝集裝座：不是對外接口（底面的 P／排氣口各自列出）
+      if (port.spec?.kind === 'interface' && product.ports.some((q) => q.sealedBy === port.id)) continue
       ports.push({
         item,
         modelCode: product.modelCode || productLabel(product),

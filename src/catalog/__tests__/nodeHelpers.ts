@@ -19,6 +19,8 @@ export const nodeParser: CadParser = async (bytes, format) => readCad(await node
 export const samplesDir = fileURLToPath(new URL('../../../public/samples/', import.meta.url))
 export const readSample = async (file: string): Promise<Uint8Array> => new Uint8Array(readFileSync(samplesDir + file))
 export const sampleManifest = (): SampleManifest => JSON.parse(readFileSync(samplesDir + 'manifest.json', 'utf8'))
+/** 測試用的 STEP 檔（不在範例零件庫中） */
+export const readFixture = async (file: string): Promise<Uint8Array> => new Uint8Array(readFileSync(fileURLToPath(new URL(`./fixtures/${file}`, import.meta.url))))
 
 let dbCounter = 0
 /** 每個測試使用獨立的資料庫名稱 */

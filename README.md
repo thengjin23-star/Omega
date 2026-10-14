@@ -294,13 +294,12 @@ node scripts/make-sample-parts.mjs   # 重新產生範例零件（public/samples
 產品庫沒有、或沒有 3D 檔的型號（預設勾選「自動產生通用 3D」）：亞德客型號依型號規則、其他廠牌由 AI 判斷規格後產生通用 3D。
 
 ```
-DEMO-MANIFOLD-4
-DEMO-VALVE-VB ×4
-DEMO-FITTING-R18-D6 ×4 → A          ← 指定接在 A 埠（集裝座的 A1～A4 都算）
+DEMO-MANIFOLD-4                      ← 亞德客式集裝座：P／EA／EB 在端面
+DEMO-VALVE-52-01 ×4                  ← 閥橫跨在站位上，底面的 P／排氣口由集裝座供應
+DEMO-FITTING-R18-D6 ×4 → A           ← 指定接在 A 埠（閥上面的 A）
 DEMO-FITTING-R18-D4 ×4 → B
-DEMO-BUSH-R14-RC18 → P
-DEMO-FITTING-R18-D6 → DEMO-BUSH-R14-RC18   ← 指定接在轉接頭上
-DEMO-SILENCER-R18 ×2                 ← 沒指定：自動接到排氣口
+DEMO-FITTING-R18-D6 → P              ← 閥底面已封住，只剩集裝座端面的 P
+DEMO-SILENCER-R18 ×2                 ← 沒指定：自動接到集裝座的排氣口
 ```
 
 - **清單寫法**：一行一個型號，數量寫「×4」「x 4」「4 個」都可以（沒寫就是 1 個）；「、」「；」可以一行寫多個；
@@ -413,7 +412,8 @@ src/
                             依型號清單組裝（BuildFromListDialog.tsx、AssemblyReport.tsx）、匯出 STEP、產生迴路圖
 public/fonts/                    PDF 用的 Noto Sans TC 字型與授權檔
 scripts/make-sample-parts.mjs    以 replicad 產生範例零件 STEP 與 manifest
-public/samples/                  範例零件（閥、接頭、消音器、速控閥、轉接頭、氣缸、集裝座、三點組合），共 13 個
+public/samples/                  範例零件（閥、接頭、消音器、速控閥、轉接頭、氣缸、集裝座、三點組合），共 12 個；
+                                 電磁閥與集裝座仿亞德客 4V100／100M（A／B 在閥上面，P／排氣在閥底面、集裝座端面）
 ```
 
 ## 模組組立的設計
