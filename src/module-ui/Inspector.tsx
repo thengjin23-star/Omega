@@ -161,19 +161,25 @@ function PartTab() {
       <SignalSection key={inst.id} instanceId={inst.id} product={product} />
       <MotionSection product={product} />
       <section>
-        <header className="mb-2 flex items-center justify-between">
+        <header className="mb-2 flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-700">埠（{product.ports.length}）</h3>
-          <Button size="sm" variant={mode === 'define-port' ? 'primary' : 'default'} onClick={() => setMode(mode === 'define-port' ? 'select' : 'define-port')}>
-            {mode === 'define-port' ? '完成新增' : '＋ 新增埠'}
-          </Button>
+          <span className="flex gap-1.5">
+            {hasModel(product) && mode !== 'define-port' && <AutoPortsButton product={product} />}
+            <Button size="sm" variant={mode === 'define-port' ? 'primary' : 'default'} onClick={() => setMode(mode === 'define-port' ? 'select' : 'define-port')}>
+              {mode === 'define-port' ? '完成新增' : '＋ 新增埠'}
+            </Button>
+          </span>
         </header>
+        <AutoPortsNotice product={product} />
         {mode === 'define-port' && (
           <p className="mb-2 rounded-md bg-blue-50 p-2 text-xs leading-5 text-blue-800">
             在 3D 畫面點選零件上的<strong>孔、凸柱或平面</strong>，系統會自動抓出位置、方向與直徑，並建議規格。
           </p>
         )}
         {product.ports.length === 0 && mode !== 'define-port' && (
-          <p className="text-xs leading-5 text-slate-500">這個產品還沒有定義任何埠。按「新增埠」後點選模型上的孔即可。</p>
+          <p className="text-xs leading-5 text-slate-500">
+            這個產品還沒有定義任何埠。按「自動找埠」由模型上的孔自動判斷，或按「新增埠」後點選模型上的孔。
+          </p>
         )}
         <ul className="space-y-1.5">
           {product.ports.map((p) => (
@@ -573,7 +579,14 @@ function PortRow({ instanceId, product, portId }: { instanceId: string; product:
   return (
     <li className={`rounded-md border p-2 ${isFrom ? 'border-blue-400 bg-blue-50' : 'border-slate-200'}`}>
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-sm font-semibold text-slate-800">{port.name}</span>
+        <span className="flex items-center gap-1.5">
+          <span className="font-mono text-sm font-semibold text-slate-800">{port.name}</span>
+          {port.detected?.auto && (
+            <span className="rounded bg-violet-100 px-1 text-[10px] text-violet-700" title="匯入時由孔徑自動判斷；確認無誤後按「全部確認」，或按「編輯」修改">
+              自動
+            </span>
+          )}
+        </span>
         {port.spec ? (
           <span className="truncate text-xs text-slate-600">{formatSpec(port.spec)}</span>
         ) : (
@@ -607,6 +620,82 @@ function PortRow({ instanceId, product, portId }: { instanceId: string; product:
         </span>
       </div>
     </li>
+  )
+}
+
+/** 由 3D 模型自動找埠 */
+function AutoPortsButton({ product }: { product: Product }) {
+  const autoDetectPorts = useModuleStore((s) => s.autoDetectPorts)
+  const [running, setRunning] = useState(false)
+  return (
+    <Button
+      size="sm"
+      disabled={running}
+      title="從模型上的孔與螺紋凸柱自動找出埠：位置、方向、規格（依孔徑與型號）與名稱"
+      onClick={async () => {
+        setRunning(true)
+        const r = await autoDetectPorts(product.id)
+        setRunning(false)
+        if (!r) return
+        const text = r.added.length
+          ? `找到 ${r.added.length} 個新的埠：${r.added.map((p) => `${p.name}${p.spec ? `（${formatSpec(p.spec)}）` : ''}`).join('、')}`
+          : r.maybe.length
+            ? `沒有確定的新埠；有 ${r.maybe.length} 個不確定的孔列在下方，可以加入`
+            : '沒有找到新的埠（模型上可能沒有畫出孔）：請按「新增埠」點選位置'
+        useModuleStore.setState({ message: { kind: 'info', text } })
+      }}
+    >
+      {running ? '找埠中…' : '自動找埠'}
+    </Button>
+  )
+}
+
+/** 自動找到的埠要確認；不確定的孔可以加入 */
+function AutoPortsNotice({ product }: { product: Product }) {
+  const maybe = useModuleStore((s) => s.maybePorts[product.id])
+  const { confirmAutoPorts, addDetectedPorts } = useModuleStore.getState()
+  const auto = product.ports.filter((p) => p.detected?.auto).length
+  const remaining = (maybe ?? []).filter((m) => !product.ports.some((p) => Math.hypot(...m.candidate.origin.map((v, i) => v - p.frame.origin[i])) < 1))
+  if (!auto && !remaining.length) return null
+  return (
+    <div className="mb-2 space-y-1.5 rounded-md bg-violet-50 p-2 text-xs leading-5 text-violet-900" data-auto-ports={auto}>
+      {auto > 0 && (
+        <div className="flex items-start justify-between gap-2">
+          <span>
+            {auto} 個埠是由孔徑<strong>自動判斷</strong>的：請看一下名稱與規格（PT／G 等牙型以型號為準），不對的按「編輯」修改。
+          </span>
+          <Button size="sm" className="shrink-0 whitespace-nowrap" onClick={() => void confirmAutoPorts(product.id)}>
+            全部確認
+          </Button>
+        </div>
+      )}
+      {remaining.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <span>不確定是不是埠的孔（可能是固定孔）：</span>
+            {remaining.length > 1 && (
+              <Button size="sm" variant="ghost" onClick={() => void addDetectedPorts(product.id, remaining)}>
+                全部加入
+              </Button>
+            )}
+          </div>
+          <ul className="mt-1 flex flex-wrap gap-1">
+            {remaining.map((m, i) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  className="rounded border border-violet-300 bg-white px-1.5 py-0.5 font-mono text-violet-800 hover:bg-violet-100"
+                  title={`${m.candidate.shape === 'hole' ? '孔' : '凸柱'} Ø${m.candidate.diameter.toFixed(1)}、深 ${m.candidate.depth.toFixed(1)} mm${m.candidate.through ? '（貫穿）' : ''}`}
+                  onClick={() => void addDetectedPorts(product.id, [m])}
+                >
+                  ＋ {m.spec ? formatSpec(m.spec) : `Ø${m.candidate.diameter.toFixed(1)}`}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   )
 }
 

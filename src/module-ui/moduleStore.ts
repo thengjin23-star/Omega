@@ -7,7 +7,7 @@ import { bomToCsv, buildBom } from '../assembly/bom'
 import * as ops from '../assembly/moduleOps'
 import { copyAttachments } from '../assembly/copyAttachments'
 import { autoAssemble, type AssembleItem } from '../assembly/autoAssemble'
-import { parsePartsList, productIndex } from '../assembly/partsList'
+import { normalizeCode, parsePartsList, productIndex } from '../assembly/partsList'
 import { isTubeSocket } from '../assembly/tubes'
 import type { DrawingInfo, IllustrationInfo, ModuleDoc, ModuleInstance, ModuleTube, PortRef } from '../assembly/types'
 import { deriveModuleCircuit, type ModuleCircuit } from '../assembly/moduleCircuit'
@@ -39,13 +39,18 @@ import type { CatalogStore } from '../catalog/db'
 import { analyzeFace, proposePort, type OpenTester, type PortProposal } from '../catalog/faceAnalysis'
 import { attachCadFile, importCadFile } from '../catalog/importer'
 import { getCatalog, useLibraryStore } from '../catalog/library'
-import { createOpenTester } from '../catalog/openTester'
+import { autoPorts, toProductPort, type DetectedPort } from '../catalog/autoPorts'
+import { decodeModelCode } from '../catalog/makerCodes'
+import { buildGenericInWorker } from '../catalog/generic/genericClient'
+import { genericFromCode, genericKey, genericMeta, type GenericSpec } from '../catalog/generic/genericParts'
+import { pneumaticFromDef, portsFromDefs } from '../catalog/samples'
+import { createOpenTester, createRaycaster, type Raycaster } from '../catalog/openTester'
 import { makeFrame } from '../catalog/ports'
 import { installSamples, type SampleManifest } from '../catalog/samples'
 import { faceOfTriangle, type Tessellation } from '../catalog/tessellation'
 import { hasModel, productLabel, type Product, type ProductPort } from '../catalog/types'
 import { add, scale, type Vec3 } from '../geometry/vec3'
-import { checkMate, type PortSpec } from '../threads'
+import { checkMate, formatSpecShort, type PortSpec } from '../threads'
 import { downloadFile, safeFileName } from '../utils/download'
 import { renderThumbnail } from './thumbnail'
 
@@ -64,8 +69,34 @@ export interface DraftPort {
   proposal: PortProposal
 }
 
+/** 自動找埠的結果 */
+export interface AutoPortsOutcome {
+  /** 加入的埠 */
+  added: ProductPort[]
+  /** 可能是埠（例如固定螺絲孔、貫穿孔），讓使用者決定 */
+  maybe: DetectedPort[]
+}
+
+/** 要產生的通用 3D 零件 */
+export interface GenericRequestItem {
+  spec: GenericSpec
+  /** 型號（沒有時用通用名稱，例如「通用 直通接頭 PT1/8-Ø6」） */
+  modelCode?: string
+  name?: string
+  maker?: string
+  /** 替這個已存在（沒有 3D 檔）的產品附加通用 3D */
+  productId?: string
+}
+
+/** 型號 → 通用零件（AI 判斷的結果） */
+export type CodeInterpreter = (codes: string[]) => Promise<Map<string, { spec: GenericSpec; name?: string; maker?: string }>>
+
 /** 依型號清單組裝的結果（清單的問題、沒有接上的零件） */
 export interface BuildOutcome {
+  /** 用通用 3D 補上的型號 */
+  generated: { line: number; code: string; name: string; by: 'rule' | 'ai' }[]
+  /** AI 判斷失敗的原因（沒有設定金鑰、網路錯誤…） */
+  aiError?: string
   /** 產品庫找不到的型號（附相近的型號） */
   notFound: { line: number; code: string; similar: string[] }[]
   /** 沒有 3D 檔、無法組裝的產品 */
@@ -94,6 +125,8 @@ interface ModuleSummary {
 }
 
 interface State {
+  /** 自動找埠時不確定的孔（產品 id → 候選）：屬性面板列出來讓使用者加入 */
+  maybePorts: Record<string, DetectedPort[]>
   status: 'loading' | 'ready' | 'error'
   error?: string
   products: Record<string, Product>
@@ -155,7 +188,12 @@ interface State {
   /** 把接在這個零件上的零件，照樣接到其他相同零件的同一個埠 */
   applyToSameParts(instanceId: string): void
   /** 依型號清單自動組裝（目前的模組是空的或也是由清單組成時，直接取代；否則開新模組） */
-  buildFromList(text: string, meta: { name?: string; customer?: string }): Promise<BuildOutcome>
+  /**
+   * 依型號清單自動組裝。generic：找不到或沒有 3D 檔的型號，依型號規則（或 interpret 的 AI 判斷）產生通用 3D。
+   */
+  buildFromList(text: string, meta: { name?: string; customer?: string; generic?: boolean; interpret?: CodeInterpreter }): Promise<BuildOutcome>
+  /** 產生通用 3D 零件（產品庫已有相同規格與型號的就沿用）；回傳的產品與 items 順序相同 */
+  createGenericParts(items: readonly GenericRequestItem[]): Promise<Product[]>
   /** 在空著的埠接上指定的零件（搭配檢查的「補上」） */
   attachAt(at: PortRef, productId: string, portId: string): Promise<void>
   /** 一次補上多個（只算一步復原） */
@@ -169,6 +207,12 @@ interface State {
   updateProduct(product: Product): Promise<void>
   savePort(productId: string, port: ProductPort): Promise<void>
   deletePort(productId: string, portId: string): Promise<void>
+  /** 從 3D 模型自動找埠（孔徑 → 規格、位置 → 名稱），也補上分類、名稱與廠牌 */
+  autoDetectPorts(productId: string): Promise<AutoPortsOutcome | undefined>
+  /** 加入自動找到、但不確定的埠 */
+  addDetectedPorts(productId: string, ports: readonly DetectedPort[]): Promise<void>
+  /** 自動找到的埠：確認無誤（取消「自動」標記） */
+  confirmAutoPorts(productId: string): Promise<void>
   arrayCopyPort(productId: string, portId: string, direction: Vec3, pitch: number, count: number): Promise<void>
   flipPort(productId: string, portId: string): Promise<void>
   rotatePortRef(productId: string, portId: string): Promise<void>
@@ -246,6 +290,7 @@ let catalog: CatalogStore | undefined
 /** init 只執行一次（React StrictMode 會呼叫兩次 effect） */
 let initPromise: Promise<void> | undefined
 const testers = new Map<string, OpenTester>()
+const raycasters = new Map<string, Raycaster>()
 const LAST_MODULE_KEY = 'pneumatic-module:last'
 const HISTORY_LIMIT = 100
 
@@ -509,6 +554,73 @@ export const useModuleStore = create<State>()((set, get) => {
     return tester
   }
 
+  const raycasterFor = (product: Product, mesh: Tessellation) => {
+    const sha = product.source.sha256
+    let r = raycasters.get(sha)
+    if (!r) {
+      r = createRaycaster(mesh)
+      raycasters.set(sha, r)
+    }
+    return r
+  }
+
+  /** 自動找埠的結果寫成一句話，例如「P、A、B：Rc1/4；EA、EB：Rc1/8」 */
+  const describePorts = (ports: readonly ProductPort[]) => {
+    const groups = new Map<string, string[]>()
+    for (const p of ports) {
+      const key = p.spec ? formatSpecShort(p.spec) : '未設定規格'
+      groups.set(key, [...(groups.get(key) ?? []), p.name])
+    }
+    return [...groups].map(([spec, names]) => `${names.join('、')}：${spec}`).join('；')
+  }
+
+  /** 新匯入（或剛附加 3D 檔）的產品：自動找埠並說明結果 */
+  const detectOnImport = async (product: Product): Promise<string> => {
+    const r = await get().autoDetectPorts(product.id)
+    const next = get().products[product.id]
+    if (!r || !next) return `已加入新產品「${product.modelCode}」。在右側按「新增埠」，再點選零件上的孔或面來定義埠。`
+    const maybe = r.maybe.length ? `另有 ${r.maybe.length} 個孔不確定是不是埠（可能是固定孔），可在右側加入。` : ''
+    if (!r.added.length)
+      return `已加入「${next.modelCode}」，但模型上沒有找到埠（可能沒有畫出孔）。${maybe}請按「新增埠」點選位置，或在產品庫用「產生通用 3D」。`
+    return `已加入「${next.modelCode}」${next.name ? `（${next.name}）` : ''}：自動找到 ${r.added.length} 個埠 — ${describePorts(r.added)}。請在右側確認，名稱或規格不對可以直接改。${maybe}`
+  }
+
+  /** 清單上找不到、或沒有 3D 檔的型號：依型號規則（或 AI）產生通用 3D */
+  const fillGeneric = async (entries: readonly { line: number; code: string }[], outcome: BuildOutcome, interpret?: CodeInterpreter) => {
+    const index = productIndex(Object.values(get().products))
+    const missing = new Map<string, { code: string; line: number; product?: Product }>()
+    for (const e of entries) {
+      const product = index.find(e.code)
+      if (product && hasModel(product)) continue
+      const code = product?.modelCode ?? e.code.trim()
+      if (!missing.has(normalizeCode(code))) missing.set(normalizeCode(code), { code, line: e.line, product })
+    }
+    if (!missing.size) return
+    const found = new Map<string, { spec: GenericSpec; name?: string; maker?: string; by: 'rule' | 'ai' }>()
+    for (const [key, m] of missing) {
+      const info = decodeModelCode(m.code)
+      const spec = info && genericFromCode(info)
+      if (spec) found.set(key, { spec, name: info.name, maker: info.maker, by: 'rule' })
+    }
+    const unknown = [...missing].filter(([key]) => !found.has(key)).map(([, m]) => m.code)
+    if (unknown.length && interpret) {
+      try {
+        set({ busy: `AI 判斷 ${unknown.length} 個型號…` })
+        for (const [code, v] of await interpret(unknown)) found.set(normalizeCode(code), { ...v, by: 'ai' })
+      } catch (err) {
+        outcome.aiError = err instanceof Error ? err.message : String(err)
+      } finally {
+        set({ busy: undefined })
+      }
+    }
+    const list = [...found].map(([key, f]) => ({ key, f, m: missing.get(key)! }))
+    if (!list.length) return
+    const made = await get().createGenericParts(
+      list.map(({ f, m }) => ({ spec: f.spec, modelCode: m.code, name: f.name, maker: f.maker, productId: m.product?.id })),
+    )
+    made.forEach((p, i) => outcome.generated.push({ line: list[i].m.line, code: p.modelCode, name: p.name, by: list[i].f.by }))
+  }
+
   const persistProduct = async (product: Product) => {
     await useLibraryStore.getState().saveProduct(product)
   }
@@ -606,6 +718,7 @@ export const useModuleStore = create<State>()((set, get) => {
     drawingOpen: false,
     seq: SEQUENCER_IDLE,
     sequenceOpen: false,
+    maybePorts: {},
 
     init() {
       initPromise ??= initialize()
@@ -641,14 +754,11 @@ export const useModuleStore = create<State>()((set, get) => {
           set({ busy: `解析 ${file.name}…（第一次使用需下載 3D 解析元件）` })
           const { product, status } = await importCadFile(catalog!, file.name, await readFile(file), parseCadInWorker)
           await refreshProducts()
+          const text = status === 'new' ? await detectOnImport(product) : `已認出「${productLabel(product)}」，沿用 ${product.ports.length} 個已定義的埠。`
           await addInstanceOf(get().products[product.id])
           void generateThumbs([get().products[product.id]])
           set({ busy: undefined })
-          info(
-            status === 'new'
-              ? `已加入新產品「${product.modelCode}」。在右側按「新增埠」，再點選零件上的孔或面來定義埠。`
-              : `已認出「${productLabel(product)}」，沿用 ${product.ports.length} 個已定義的埠。`,
-          )
+          info(text)
         } catch (err) {
           fail(err)
         }
@@ -689,10 +799,11 @@ export const useModuleStore = create<State>()((set, get) => {
         set({ busy: `解析 ${file.name}…` })
         const next = await attachCadFile(catalog!, product, file.name, await readFile(file), parseCadInWorker)
         await refreshProducts()
+        const text = next.ports.length ? `已替「${productLabel(next)}」附加 3D 檔。` : await detectOnImport(next)
         set({ busy: undefined })
         await addInstanceOf(get().products[next.id])
         void generateThumbs([get().products[next.id]])
-        info(`已替「${productLabel(next)}」附加 3D 檔。在右側按「新增埠」定義埠。`)
+        info(text)
       } catch (err) {
         fail(err)
       }
@@ -762,11 +873,18 @@ export const useModuleStore = create<State>()((set, get) => {
     },
 
     async buildFromList(text, meta) {
-      const { products, stats } = get()
-      const library = Object.values(products)
-      const index = productIndex(library)
-      const parsed = parsePartsList(text, index.isCode)
-      const outcome: BuildOutcome = { notFound: [], noModel: [], errors: parsed.errors, leftovers: [], placed: 0, groups: 0 }
+      const { stats } = get()
+      const parsed = parsePartsList(text, productIndex(Object.values(get().products)).isCode)
+      const outcome: BuildOutcome = { generated: [], notFound: [], noModel: [], errors: parsed.errors, leftovers: [], placed: 0, groups: 0 }
+      if (meta.generic) {
+        try {
+          await fillGeneric(parsed.entries, outcome, meta.interpret)
+        } catch (err) {
+          fail(err)
+          throw err
+        }
+      }
+      const index = productIndex(Object.values(get().products))
       const items: AssembleItem[] = []
       for (const e of parsed.entries) {
         const product = index.find(e.code)
@@ -787,7 +905,7 @@ export const useModuleStore = create<State>()((set, get) => {
         for (const product of new Set(items.map((i) => i.product))) {
           if (!(await ensureMesh(product))) throw new Error(`「${product.modelCode}」的 3D 檔讀取失敗`)
         }
-        const r = autoAssemble(items, get().products, { name: meta.name, customer: meta.customer, stats, library })
+        const r = autoAssemble(items, get().products, { name: meta.name, customer: meta.customer, stats, library: Object.values(get().products) })
         let doc: ModuleDoc = { ...arrangeGroups(r.doc, r.roots), partsList: text }
         const cur = get().doc
         if (!cur.instances.length || cur.partsList !== undefined) {
@@ -930,12 +1048,121 @@ export const useModuleStore = create<State>()((set, get) => {
       await persistProduct(product)
     },
 
-    async savePort(productId, port) {
+    async savePort(productId, edited) {
       const product = get().products[productId]
+      // 使用者存過的埠就不再標示為「自動找到」
+      const port = edited.detected?.auto ? { ...edited, detected: { shape: edited.detected.shape, diameter: edited.detected.diameter } } : edited
       const exists = product.ports.some((p) => p.id === port.id)
       const ports = exists ? product.ports.map((p) => (p.id === port.id ? port : p)) : [...product.ports, port]
       await persistProduct({ ...product, ports })
       set({ draftPort: undefined, editingPort: undefined, mode: 'select' })
+    },
+
+    async autoDetectPorts(productId) {
+      const product = get().products[productId]
+      if (!product || !hasModel(product)) return undefined
+      try {
+        const mesh = await ensureMesh(product)
+        if (!mesh) return undefined
+        const code = decodeModelCode(product.modelCode)
+        const r = autoPorts(mesh, raycasterFor(product, mesh), {
+          code,
+          category: product.category !== 'other' ? product.category : undefined,
+          text: `${product.modelCode} ${product.name} ${product.source.fileName}`,
+          existing: product.ports,
+        })
+        const next: Product = {
+          ...product,
+          ports: [...product.ports, ...r.ports],
+          category: product.category === 'other' ? r.category : product.category,
+          name: product.name || r.name,
+          ...(code && !product.maker && { maker: code.maker }),
+          ...(code?.series && !product.series && { series: code.series }),
+          updatedAt: Date.now(),
+        }
+        if (r.ports.length || next.category !== product.category || next.name !== product.name || next.maker !== product.maker) await persistProduct(next)
+        set((s) => ({ maybePorts: { ...s.maybePorts, [productId]: r.maybe } }))
+        return { added: r.ports, maybe: r.maybe }
+      } catch (err) {
+        fail(err)
+        return undefined
+      }
+    },
+
+    async addDetectedPorts(productId, detected) {
+      const product = get().products[productId]
+      if (!product || !detected.length) return
+      const used = new Set(product.ports.map((p) => p.name))
+      const ports = detected.map((d) => {
+        const port = toProductPort(d)
+        // 不確定的埠名稱是「埠n」：避免與既有的名稱重複
+        let name = port.name
+        for (let k = 1; used.has(name); k++) name = `埠${k}`
+        used.add(name)
+        return { ...port, name }
+      })
+      await persistProduct({ ...product, ports: [...product.ports, ...ports], updatedAt: Date.now() })
+      set((s) => ({ maybePorts: { ...s.maybePorts, [productId]: (s.maybePorts[productId] ?? []).filter((m) => !detected.includes(m)) } }))
+    },
+
+    async createGenericParts(items) {
+      const result: (Product | undefined)[] = items.map(() => undefined)
+      const sameCode = (a: string, b?: string) => !b || normalizeCode(a) === normalizeCode(b)
+      // 產品庫已經有相同規格（與型號）的通用零件：沿用
+      const todo: number[] = []
+      items.forEach((item, i) => {
+        const existing = Object.values(get().products).find(
+          (p) => p.generic && hasModel(p) && genericKey(p.generic) === genericKey(item.spec) && sameCode(p.modelCode, item.modelCode ?? genericMeta(item.spec).modelCode),
+        )
+        if (existing) result[i] = existing
+        else todo.push(i)
+      })
+      if (todo.length) {
+        try {
+          set({ busy: '產生通用 3D（第一次使用需下載 3D 元件，約 20 MB）…' })
+          const built = await buildGenericInWorker(
+            todo.map((i) => items[i].spec),
+            (done, total) => set({ busy: `產生通用 3D（${done}／${total}）…` }),
+          )
+          for (const [k, i] of todo.entries()) {
+            const item = items[i]
+            const meta = genericMeta(item.spec)
+            const modelCode = item.modelCode?.trim() || meta.modelCode
+            const fileName = `${safeFileName(modelCode)}.step`
+            const ports = portsFromDefs(built[k].ports)
+            const base = item.productId ? get().products[item.productId] : undefined
+            const stored = base
+              ? await attachCadFile(catalog!, base, fileName, built[k].bytes, parseCadInWorker)
+              : (await importCadFile(catalog!, fileName, built[k].bytes, parseCadInWorker)).product
+            const product: Product = {
+              ...stored,
+              modelCode,
+              name: base?.name || item.name || meta.name,
+              category: base && base.category !== 'other' ? base.category : meta.category,
+              ports,
+              pneumatic: pneumaticFromDef(meta.pneumatic, ports),
+              generic: item.spec,
+              notes: base?.notes || '通用 3D：系統依尺寸產生的示意模型（不是原廠 3D 檔，接口尺寸接近實物）',
+              ...((base?.maker || item.maker) && { maker: base?.maker || item.maker }),
+              updatedAt: Date.now(),
+            }
+            await persistProduct(product)
+            result[i] = product
+          }
+          await refreshProducts()
+          void generateThumbs(todo.map((i) => get().products[result[i]!.id]).filter(Boolean))
+        } finally {
+          set({ busy: undefined })
+        }
+      }
+      return result.map((p) => get().products[p!.id] ?? p!)
+    },
+
+    async confirmAutoPorts(productId) {
+      const product = get().products[productId]
+      if (!product) return
+      const ports = product.ports.map((p) => (p.detected?.auto ? { ...p, detected: { shape: p.detected.shape, diameter: p.detected.diameter } } : p))
+      await persistProduct({ ...product, ports, updatedAt: Date.now() })
     },
 
     async deletePort(productId, portId) {

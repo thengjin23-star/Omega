@@ -157,7 +157,8 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
         return labelMode === 'code-qty' ? `${base} ×${n}` : base
       }
       const p = products[key]
-      const code = p?.modelCode || p?.name || '（未命名）'
+      // 通用 3D 沒有原廠型號：標註時省略「通用」字樣
+      const code = (p?.generic ? p.modelCode.replace(/^通用\s+/, '') : p?.modelCode) || p?.name || '（未命名）'
       if (labelMode === 'code-qty') return `${code} ×${n}`
       if (labelMode === 'code-name' && p?.name && p.name !== code) return `${code}（${p.name}）`
       return code

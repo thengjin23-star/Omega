@@ -126,6 +126,14 @@ function parseItem(text: string, isCode: (code: string) => boolean): { code: str
 }
 
 function parseHint(text: string, isCode: (code: string) => boolean): PartsListEntry['hint'] {
+  // 型號本身含空白（例如「通用 集裝座 4 站 PT1/8」）：整段是型號，或「型號 的 埠」
+  const trimmed = text.trim()
+  if (/\s/.test(trimmed) && isCode(trimmed)) return { target: trimmed, ports: [] }
+  const withPorts = /^(.+?)\s*(?:的|上的?)\s*(.+)$/u.exec(trimmed)
+  if (withPorts && /\s/.test(withPorts[1].trim()) && isCode(withPorts[1].trim())) {
+    const rest = parseHint(withPorts[2], () => false)
+    return { target: withPorts[1].trim(), ports: rest?.ports ?? [] }
+  }
   const tokens = text
     .split(/[,，、/\s]+/)
     .map((t) => t.replace(/^(的|上的?|之)|(的|上)$/gu, '').trim())

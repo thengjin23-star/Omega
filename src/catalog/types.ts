@@ -1,6 +1,7 @@
 import type { ParamValue } from '../engine/types'
 import type { Vec3 } from '../geometry/vec3'
 import type { PortSpec } from '../threads'
+import type { GenericSpec } from './generic/genericParts'
 
 export type { Vec3 }
 
@@ -28,8 +29,8 @@ export interface ProductPort {
   spec?: PortSpec
   frame: PortFrame
   rotation: PortRotation
-  /** 由 3D 模型自動量測到的資訊 */
-  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number }
+  /** 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（使用者還沒確認） */
+  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean }
 }
 
 export type ProductCategory =
@@ -97,6 +98,8 @@ export interface Product {
   /** 單價（選填；有填時 BOM 會算出小計與合計） */
   price?: number
   notes?: string
+  /** 通用 3D：系統依尺寸產生的示意模型（不是原廠 3D 檔），記下規格以便沿用 */
+  generic?: GenericSpec
   createdAt: number
   updatedAt: number
 }
