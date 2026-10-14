@@ -164,7 +164,7 @@ export function DescribeDialog({ onClose, onBuild }: { onClose: () => void; onBu
                           value={r.qty}
                           aria-label={`${r.label} 的數量`}
                           onChange={(e) => setRow(i, { qty: Math.max(1, Number(e.target.value) || 1) })}
-                          className="h-7 w-14 rounded border border-slate-300 px-1 text-right"
+                          className="h-7 w-14 rounded border border-slate-300 bg-white px-1 text-right text-slate-800"
                         />
                       </td>
                       <td className="py-1.5 pl-2">
