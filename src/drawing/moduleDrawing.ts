@@ -84,7 +84,7 @@ export function collectModuleDrawing(
   const instances: ModuleDrawingSource['instances'] = []
   const geometries = new Map<string, MeshGeometry>()
   const withoutModel = new Set<string>()
-  const used = usedPorts(doc)
+  const used = usedPorts(doc, products)
   const ports: PortSource[] = []
   for (const inst of doc.instances) {
     const product = products[inst.productId]

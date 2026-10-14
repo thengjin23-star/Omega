@@ -15,6 +15,9 @@ import {
   type ThreadSize,
   type ThreadStd,
   type ValveFunction,
+  type ValveSeries,
+  VALVE_SERIES,
+  seriesOf,
 } from '../catalog/generic/genericParts'
 import { CATEGORY_LABEL, hasModel, type Product } from '../catalog/types'
 import { STANDARD_BORES } from '../engine/components/cylinderDouble'
@@ -40,7 +43,10 @@ export interface AiPart {
   inner?: ThreadSize | null
   valveFunction?: ValveFunction | null
   exhaust?: ThreadSize | null
+  /** 舊版欄位（已不使用） */
   mount?: 'body' | 'base' | null
+  /** 閥與集裝座的大小系列（100～400，對應亞德客 4V100～4V400） */
+  series?: number | null
   stations?: number | null
   bore?: number | null
   stroke?: number | null
@@ -77,7 +83,7 @@ const PART_SCHEMA: GeminiSchema = {
     inner: nullable({ ...THREAD_ENUM, description: '轉接頭的內牙尺寸' }),
     valveFunction: nullable({ type: 'STRING', enum: Object.keys(VALVE_FUNCTION_LABEL), description: '閥的功能' }),
     exhaust: nullable({ ...THREAD_ENUM, description: '閥的排氣口尺寸（與接管口不同時）' }),
-    mount: nullable({ type: 'STRING', enum: ['body', 'base'], description: 'body = 管接式；base = 底板式（裝在集裝座上）' }),
+    series: nullable({ type: 'INTEGER', description: '電磁閥與集裝座的大小系列：100、200、300、400（亞德客 4V100～4V400；閥與它的集裝座要相同）' }),
     stations: nullable({ type: 'INTEGER', description: '集裝座站數' }),
     bore: nullable({ type: 'INTEGER', description: '氣缸缸徑 mm' }),
     stroke: nullable({ type: 'INTEGER', description: '氣缸行程 mm' }),
@@ -107,10 +113,14 @@ export const SYSTEM_PROMPT = `你是台灣氣動元件業的應用工程師，�
 1. 依敘述列出要用的零件與數量。不要加敘述沒提到、也不是必要的零件；有提到「排氣加消音器」才加消音器。
 2. 產品庫裡有合適的產品時優先使用：libraryCode 填產品庫清單裡的型號（原樣照抄，不能自己編）。沒有合適的就留空，改填 kind 與尺寸，系統會產生通用 3D。
 3. 台灣慣用語：1分 = 1/8"、2分 = 1/4"、3分 = 3/8"、4分 = 1/2"、6分 = 3/4"；「6mm 快插」「6 的管」= 管徑 Ø6；PT = R／Rc 錐管牙（沒說牙型就是 PT），PF = G。
-4. 接頭的螺紋要與它接的埠一樣大；集裝座的 A／B 口、閥的接管口要對應正確尺寸。
-5. 「N 位（N 聯、N 站）集裝座／閥島」：一個 manifold（stations = N），加上 N 顆底板式電磁閥（kind valve、mount base、qty N、connectTo 集裝座）；
-   A、B 口的快插接頭接在集裝座（connectTo 集裝座，ports ["A"] 或 ["B"]，qty 各 N）；集裝座的 P 口比 A／B 大一號。
-6. 管接式電磁閥：接頭接在閥的 P、A、B，消音器接 EA、EB。氣缸的速度控制接頭接在氣缸的 A、B。
+4. 接頭的螺紋要與它接的埠一樣大。電磁閥（仿亞德客 4V／3V）：A、B 在閥的上面，P 與排氣口 EA、EB（3 口閥為 R）在閥的底面。
+   閥的系列（series）依接管口：M5→100、1/8→200（或 100）、1/4→200、3/8→300、1/2→400；排氣口：200 系列 1/8、300 系列 1/4，其餘與接管口相同。
+5. 「N 位（N 聯、N 站）集裝座／閥島」：一個 manifold（stations = N、series 與閥相同），加上 N 顆電磁閥（kind valve、qty N、connectTo 集裝座，不填 ports）。
+   閥裝在集裝座上時，閥底面的 P／排氣口由集裝座供氣、排氣：
+   - A、B 口的快插接頭接在「閥」上（connectTo 閥，ports ["A"] 與 ["B"] 分兩項，qty 各 N）；
+   - 供氣的接頭接在「集裝座」的 P、消音器接在集裝座的 EA、EB（connectTo 集裝座）。
+   集裝座端面的 P 與排氣口尺寸：100 系列 1/8、200 系列 1/4、300 系列 3/8、400 系列 1/2。
+6. 單獨使用的電磁閥（沒有集裝座）：接頭接在閥的 P、A、B，消音器接 EA、EB。氣缸的速度控制接頭接在氣缸的 A、B。
 7. 使用者給了型號就填在 code（原樣），並依你對該型號的了解填 kind 與尺寸；不確定時 confidence 填 low，並在 notes 說明。
 8. ref 依序用 p1、p2…；connectTo 填對方的 ref。
 9. notes 列出你做的假設（例如「沒說牙型，假設 PT」）與需要確認的地方，最多 6 項。`
@@ -142,6 +152,7 @@ export function codesPrompt(codes: readonly string[]): string {
 
 // ---------------------------------------------------------------- 檢查與修正
 
+const isSeries = (v: unknown): v is ValveSeries => typeof v === 'number' && (VALVE_SERIES as readonly number[]).includes(v)
 const nearest = (value: number, list: readonly number[]) => list.reduce((a, b) => (Math.abs(b - value) < Math.abs(a - value) ? b : a))
 const isThread = (v: unknown): v is ThreadSize => typeof v === 'string' && (THREAD_SIZES as readonly string[]).includes(v)
 
@@ -190,14 +201,15 @@ export function toGenericSpec(p: AiPart): { spec: GenericSpec; defaults: string[
         fn,
         thread: thread('1/8', '接管口'),
         std,
-        ...(p.mount === 'base' && { mount: 'base' as const }),
-        ...(p.mount !== 'base' && isThread(p.exhaust) && p.exhaust !== p.thread && { exhaust: p.exhaust }),
+        ...(isThread(p.exhaust) && p.exhaust !== p.thread && { exhaust: p.exhaust }),
+        ...(isSeries(p.series) && { series: p.series }),
       }
       break
     }
     case 'manifold': {
       const stations = typeof p.stations === 'number' && p.stations > 0 ? Math.min(20, Math.round(p.stations)) : (defaults.push('站數未指定，暫用 4 站'), 4)
-      spec = { kind: 'manifold', stations, thread: thread('1/8', 'A／B 口'), std }
+      const series: ValveSeries = isSeries(p.series) ? p.series : isThread(p.thread) ? seriesOf(p.thread) : (defaults.push('系列未指定，暫用 200 系列'), 200)
+      spec = { kind: 'manifold', stations, series, std }
       break
     }
     case 'cylinder': {
@@ -236,11 +248,24 @@ export interface PlanRow {
   notes: string[]
 }
 
+/** 閥與它裝的集裝座要同一個系列：集裝座跟著閥（閥的系列由接管口決定時也一樣） */
+function harmonizeSeries(rows: PlanRow[]): PlanRow[] {
+  return rows.map((r) => {
+    if (r.spec?.kind !== 'manifold') return r
+    const valve = rows.find((v) => v.connectTo === r.ref && v.spec?.kind === 'valve')
+    if (!valve || valve.spec?.kind !== 'valve') return r
+    const series = valve.spec.series ?? seriesOf(valve.spec.thread)
+    const fixedSeries = Math.max(series, valveMinSeries(valve.spec.thread)) as ValveSeries
+    return r.spec.series === fixedSeries ? r : { ...r, spec: { ...r.spec, series: fixedSeries } }
+  })
+}
+const valveMinSeries = (t: ThreadSize): ValveSeries => (t === '1/4' ? 200 : t === '3/8' ? 300 : t === '1/2' || t === '3/4' ? 400 : 100)
+
 /** AI 的回答 → 清單（檢查型號是否真的在產品庫、尺寸是否合理） */
 export function planFromAi(result: AiResult, products: readonly Product[]): PlanRow[] {
   const byCode = new Map(products.filter(hasModel).map((p) => [normalizeCode(p.modelCode), p]))
   const refs = new Set(result.parts.map((p) => p.ref))
-  return result.parts
+  const rows = result.parts
     .filter((p) => p && typeof p.label === 'string')
     .map((p, i): PlanRow => {
       const qty = Math.max(1, Math.min(200, Math.round(Number(p.qty) || 1)))
@@ -261,6 +286,7 @@ export function planFromAi(result: AiResult, products: readonly Product[]): Plan
       if (!g) return { ...base, notes: ['無法判斷種類與尺寸，不會加入'] }
       return { ...base, spec: g.spec, notes: g.defaults }
     })
+  return harmonizeSeries(rows)
 }
 
 /** 型號 → 通用零件（AI 判斷不認得的型號） */

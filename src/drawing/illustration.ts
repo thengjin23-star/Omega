@@ -193,35 +193,64 @@ export function layoutCallouts(input: CalloutLayoutInput): CalloutLabel[] {
     if (!moved) break
   }
 
-  const labels: CalloutLabel[] = []
-  for (const side of ['left', 'right', 'top', 'bottom'] as Side[]) {
-    const members = info.filter((m) => sideOf(m) === side)
-    if (!members.length) continue
-    const vertical = side === 'left' || side === 'right'
-    members.sort((a, b) => (vertical ? a.c[1] - b.c[1] : a.c[0] - b.c[0]))
-    const sizes = members.map((m) => (vertical ? h : m.w))
-    const centers = spread(
-      members.map((m) => (vertical ? m.c[1] : m.c[0])),
-      sizes,
-      10,
-      vertical ? canvas.h - 10 : canvas.w - 10,
-      vertical ? 10 : 24,
-    )
-    members.forEach((m, i) => {
-      let x: number
-      let y: number
-      if (side === 'left') {
-        x = image.x - style.gap - m.w
-        y = centers[i] - h / 2
-      } else if (side === 'right') {
-        x = image.x + image.w + style.gap
-        y = centers[i] - h / 2
-      } else {
-        x = centers[i] - m.w / 2
-        y = side === 'top' ? image.y - style.gap - h : image.y + image.h + style.gap
+  const place = (): CalloutLabel[] => {
+    const labels: CalloutLabel[] = []
+    for (const side of ['left', 'right', 'top', 'bottom'] as Side[]) {
+      const members = info.filter((m) => sideOf(m) === side)
+      if (!members.length) continue
+      const vertical = side === 'left' || side === 'right'
+      members.sort((a, b) => (vertical ? a.c[1] - b.c[1] : a.c[0] - b.c[0]))
+      const sizes = members.map((m) => (vertical ? h : m.w))
+      const centers = spread(
+        members.map((m) => (vertical ? m.c[1] : m.c[0])),
+        sizes,
+        10,
+        vertical ? canvas.h - 10 : canvas.w - 10,
+        vertical ? 10 : 24,
+      )
+      members.forEach((m, i) => {
+        let x: number
+        let y: number
+        if (side === 'left') {
+          x = image.x - style.gap - m.w
+          y = centers[i] - h / 2
+        } else if (side === 'right') {
+          x = image.x + image.w + style.gap
+          y = centers[i] - h / 2
+        } else {
+          x = centers[i] - m.w / 2
+          y = side === 'top' ? image.y - style.gap - h : image.y + image.h + style.gap
+        }
+        labels.push({ key: m.g.key, text: m.g.text, side, anchors: m.g.anchors, x, y, w: m.w, h })
+      })
+    }
+    return labels
+  }
+
+  // 引線交叉時：試著把標註換到其他放得下的一側，交叉變少就採用（交叉一樣多時不動）
+  let labels = place()
+  let crossed = leaderCrossings(labels)
+  for (let round = 0; round < 3 && crossed > 0; round++) {
+    let improved = false
+    for (const m of info) {
+      const current = m.choice
+      let best = { choice: current, crossed, labels }
+      for (let c = 0; c < 4; c++) {
+        if (c === current) continue
+        m.choice = c
+        if (!capacity(sideOf(m), info.filter((x) => sideOf(x) === sideOf(m)))) continue
+        const ls = place()
+        const k = leaderCrossings(ls)
+        if (k < best.crossed) best = { choice: c, crossed: k, labels: ls }
       }
-      labels.push({ key: m.g.key, text: m.g.text, side, anchors: m.g.anchors, x, y, w: m.w, h })
-    })
+      m.choice = best.choice
+      if (best.choice !== current) {
+        labels = best.labels
+        crossed = best.crossed
+        improved = true
+      }
+    }
+    if (!improved) break
   }
 
   // 拖曳過的標籤：用使用者的位置
@@ -229,6 +258,21 @@ export function layoutCallouts(input: CalloutLayoutInput): CalloutLabel[] {
     const p = input.fixed?.[l.key]
     return p ? { ...l, x: p[0], y: p[1], side: sideFacing({ ...l, x: p[0], y: p[1] }, centroid(l.anchors)) } : l
   })
+}
+
+/** 不同標註的引線互相交叉的次數 */
+export function leaderCrossings(labels: readonly CalloutLabel[]): number {
+  const segs = labels.flatMap((l) => l.anchors.map((a) => ({ key: l.key, a: leaderOrigin(l), b: a })))
+  let n = 0
+  for (let i = 0; i < segs.length; i++)
+    for (let j = i + 1; j < segs.length; j++) if (segs[i].key !== segs[j].key && segmentsCross(segs[i].a, segs[i].b, segs[j].a, segs[j].b)) n++
+  return n
+}
+
+const orient = (a: Pt, b: Pt, c: Pt) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+/** 兩線段在內部相交（共用端點不算） */
+function segmentsCross(p1: Pt, p2: Pt, q1: Pt, q2: Pt): boolean {
+  return orient(p1, p2, q1) * orient(p1, p2, q2) < 0 && orient(q1, q2, p1) * orient(q1, q2, p2) < 0
 }
 
 /** 標籤朝向箭頭落點重心的那一邊 */

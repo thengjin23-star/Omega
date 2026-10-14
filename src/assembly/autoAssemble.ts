@@ -108,7 +108,7 @@ export function autoAssemble(
   }
 
   const candidates = (): Candidate[] => {
-    const used = usedPorts(doc)
+    const used = usedPorts(doc, all)
     const list: Candidate[] = []
     doc.instances.forEach((inst, instOrder) => {
       const host = all[inst.productId]
@@ -191,7 +191,7 @@ export function autoAssemble(
   // ---- 沒有接上的零件：原因與建議 ----
   const labels = instanceLabels(doc, all)
   const library = options.library ?? Object.values(products)
-  const used = usedPorts(doc)
+  const used = usedPorts(doc, all)
   const leftovers: Leftover[] = []
   items.forEach((item, k) => {
     if (!remaining[k]) return

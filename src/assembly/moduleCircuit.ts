@@ -1,8 +1,8 @@
-import { manifoldLayout } from '../catalog/manifold'
+import { commonChannelOf, manifoldLayout } from '../catalog/manifold'
 import { effectivePneumatic, FITTING_TYPE, MANIFOLD_TYPE } from '../catalog/pneumatic'
 import { productLabel, type Product } from '../catalog/types'
 import { DEFAULT_SUPPLY_PRESSURE, portKey, registry, type Circuit, type CircuitNode, type Tube } from '../engine'
-import type { ProductMap } from './moduleOps'
+import { usedPorts, type ProductMap } from './moduleOps'
 import type { ModuleDoc } from './types'
 
 /**
@@ -11,7 +11,8 @@ import type { ModuleDoc } from './types'
  * - 有氣動功能的零件（閥、氣缸、速控閥、消音器、三點組合…）是迴路的元件，功能埠依 portMap 對到產品的埠；
  *   參數 = 產品氣動功能的參數，再以零件在模組中的參數（ModuleInstance.params）覆蓋
  * - 鎖合、接頭（氣流直接通過）、PU 管把產品的埠連成「網路」（union-find）
- * - 集裝座：底板式閥裝在某一站時，閥的 P／EA／EB 接到共用通路、A／B 接到該站出口
+ * - 集裝座：底板式閥裝在某一站時，閥的 P／EA／EB 接到共用通路、A／B 接到該站出口；
+ *   閥本身有 P／排氣口（底面被安裝面封住，例如亞德客 4V）時，那些埠接到共用通路，A／B 用閥上的埠
  * - 供氣口：模組指定的埠接上一個氣源
  * - 空著的排氣埠視為直接排大氣；其他空著的埠視為封閉（並提出提醒）
  */
@@ -116,15 +117,15 @@ export function deriveModuleCircuit(doc: ModuleDoc, products: ProductMap): Modul
   for (const inst of doc.instances) for (const port of productOf(inst.id)?.ports ?? []) uf.find(phys(inst.id, port.id))
 
   // ---- 鎖合：管路埠直接相通；安裝面記下「哪個閥裝在集裝座的哪一站」 ----
-  const mountedOn = new Map<string, { manifold: string; mount: string }>()
+  const mountedOn = new Map<string, { manifold: string; mount: string; own: string }>()
   for (const m of doc.mates) {
     const a = m.parent
     const b = m.child
     if (isInterface(a.instance, a.port) || isInterface(b.instance, b.port)) {
       const pa = productOf(a.instance)
       const pb = productOf(b.instance)
-      if (pa && effectivePneumatic(pa)?.type === MANIFOLD_TYPE) mountedOn.set(b.instance, { manifold: a.instance, mount: a.port })
-      else if (pb && effectivePneumatic(pb)?.type === MANIFOLD_TYPE) mountedOn.set(a.instance, { manifold: b.instance, mount: b.port })
+      if (pa && effectivePneumatic(pa)?.type === MANIFOLD_TYPE) mountedOn.set(b.instance, { manifold: a.instance, mount: a.port, own: b.port })
+      else if (pb && effectivePneumatic(pb)?.type === MANIFOLD_TYPE) mountedOn.set(a.instance, { manifold: b.instance, mount: b.port, own: a.port })
       continue
     }
     uf.union(phys(a.instance, a.port), phys(b.instance, b.port))
@@ -168,6 +169,19 @@ export function deriveModuleCircuit(doc: ModuleDoc, products: ProductMap): Modul
     }
   }
 
+  // ---- 裝在集裝座上的閥：底面被安裝面封住的 P／排氣口接到集裝座的共用通路（A／B 在閥上） ----
+  for (const [instance, on] of mountedOn) {
+    const product = productOf(instance)
+    const manifold = productOf(on.manifold)
+    const layout = manifold && manifoldLayout(manifold)
+    if (!product || !layout) continue
+    for (const port of product.ports) {
+      if (port.sealedBy !== on.own) continue
+      const target = commonChannelOf(layout, port.name)
+      if (target) uf.union(phys(instance, port.id), phys(on.manifold, target))
+    }
+  }
+
   // ---- 底板式閥：經由集裝座的通路 ----
   for (const { instance, type } of baseMounted) {
     const def = registry.get(type)
@@ -208,9 +222,8 @@ export function deriveModuleCircuit(doc: ModuleDoc, products: ProductMap): Modul
   for (const inst of doc.instances) for (const port of productOf(inst.id)?.ports ?? []) groupOf(phys(inst.id, port.id)).ports.push(phys(inst.id, port.id))
 
   // 空著的產品埠：沒有鎖合、沒有 PU 管、不是供氣口
-  const used = new Set<string>()
-  for (const m of doc.mates) used.add(phys(m.parent.instance, m.parent.port)).add(phys(m.child.instance, m.child.port))
-  for (const t of doc.tubes ?? []) used.add(phys(t.a.instance, t.a.port)).add(phys(t.b.instance, t.b.port))
+  // （裝在集裝座上的閥，底面被封住的埠也算接了：由集裝座供氣、排氣）
+  const used = usedPorts(doc, products)
   if (doc.supply) used.add(phys(doc.supply.instance, doc.supply.port))
   const roleOf = (e: NetEndpoint) => registry.get(nodes.find((n) => n.id === e.node)!.type).ports.find((p) => p.id === e.port)?.role
 

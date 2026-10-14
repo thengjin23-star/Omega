@@ -93,7 +93,11 @@ describe('autoPorts：從 3D 模型自動找埠（範例零件）', () => {
     const r = autoPorts(tess, createRaycaster(tess), { code })
     expect(r.category).toBe('valve')
     expect(r.name).toBe('5/2 單電控電磁閥 G1/8')
-    expect(new Set(r.ports.map((p) => formatSpecShort(p.spec!)))).toEqual(new Set(['G1/8']))
+    expect(new Set(r.ports.filter((p) => p.spec?.kind === 'thread').map((p) => formatSpecShort(p.spec!)))).toEqual(new Set(['G1/8']))
+    // 4V 系列：P 與排氣口所在的面加上裝集裝座的安裝面（100 系列），P／EA／EB 由它封住
+    const mount = r.ports.find((p) => p.spec?.kind === 'interface')!
+    expect(mount).toMatchObject({ name: '安裝面', spec: { kind: 'interface', key: '100 系列閥座', role: 'plug' } })
+    expect(r.ports.filter((p) => p.sealedBy === mount.id).map((p) => p.name).sort()).toEqual(['EA', 'EB', 'P'])
   })
 
   it('已經有的埠不重複加入', async () => {

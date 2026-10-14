@@ -29,6 +29,11 @@ export interface ProductPort {
   spec?: PortSpec
   frame: PortFrame
   rotation: PortRotation
+  /**
+   * 被同一個零件的安裝面封住的埠（例如電磁閥底面的 P／排氣口）：那個安裝面裝在集裝座上時，
+   * 這個埠由集裝座供氣／排氣，不必另外接管；沒有裝在集裝座上時，可以直接接接頭或消音器。
+   */
+  sealedBy?: string
   /** 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（使用者還沒確認） */
   detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean }
 }
