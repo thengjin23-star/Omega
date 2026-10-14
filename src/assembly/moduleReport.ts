@@ -77,7 +77,7 @@ export function moduleReport(
   }
 
   // ---- 沒接的埠 ----
-  const used = usedPorts(doc)
+  const used = usedPorts(doc, products)
   const tubes = new Map<string, number>()
   let noSpec = 0
   for (const inst of doc.instances) {
@@ -91,6 +91,8 @@ export function moduleReport(
         noSpec++
         continue
       }
+      // 閥底面這類「可以裝集裝座、也可以直接接管」的安裝面：不裝也沒關係
+      if (spec.kind === 'interface' && product.ports.some((q) => q.sealedBy === port.id)) continue
       if (spec.kind === 'tube') {
         const key = formatSpec(spec)
         tubes.set(key, (tubes.get(key) ?? 0) + 1)

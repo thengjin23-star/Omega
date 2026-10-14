@@ -13,6 +13,23 @@ export type ThreadSize = 'M5' | 'M6' | '1/8' | '1/4' | '3/8' | '1/2' | '3/4'
 export type ThreadStd = 'PT' | 'G' | 'NPT'
 export type ValveFunction = '52Single' | '52Double' | '53Closed' | '53Exhaust' | '53Pressure' | '32NC' | '52Pilot'
 export type FrlUnit = 'filter' | 'regulator' | 'lubricator' | 'filterRegulator' | 'combo'
+/** 閥的大小系列（對應亞德客 4V100～4V400）：決定閥體大小與集裝座的安裝面 */
+export type ValveSeries = 100 | 200 | 300 | 400
+export const VALVE_SERIES: readonly ValveSeries[] = [100, 200, 300, 400]
+
+/** 沒有指定系列時依接管口判斷 */
+export function seriesOf(thread: ThreadSize | undefined): ValveSeries {
+  if (thread === 'M5' || thread === 'M6') return 100
+  if (thread === '3/8') return 300
+  if (thread === '1/2' || thread === '3/4') return 400
+  return 200
+}
+
+/** 集裝座端面 P 與排氣口的尺寸（依系列） */
+export const MANIFOLD_PORT: Record<ValveSeries, ThreadSize> = { 100: '1/8', 200: '1/4', 300: '3/8', 400: '1/2' }
+
+/** 閥底面與集裝座站位共用的安裝面名稱（系列相同才裝得上） */
+export const seriesInterfaceKey = (series: ValveSeries) => `${series} 系列閥座`
 
 export type GenericSpec =
   /** 快插接頭：有 thread 為外牙接頭，沒有則是管對管；form：直通、彎頭、三通 */
@@ -22,10 +39,14 @@ export type GenericSpec =
   /** 轉接頭：外牙 thread、內牙 inner */
   | { kind: 'bushing'; thread: ThreadSize; inner: ThreadSize; std?: ThreadStd }
   | { kind: 'speedController'; thread: ThreadSize; tube: number; std?: ThreadStd }
-  /** 電磁閥：body = 管接式（P／EA／EB 在前面、A／B 在上面）；base = 底板式（裝在集裝座上） */
-  | { kind: 'valve'; fn: ValveFunction; thread: ThreadSize; exhaust?: ThreadSize; std?: ThreadStd; mount?: 'body' | 'base' }
-  /** 集裝座：stations 站，每站的 A／B 為 thread，P 大一號 */
-  | { kind: 'manifold'; stations: number; thread: ThreadSize; std?: ThreadStd }
+  /**
+   * 電磁閥（仿亞德客 4V／3V）：A、B 在上面，P 與排氣口（EA／EB、3 口閥為 R）在底面；
+   * 底面也是裝集裝座的安裝面（series 相同的集裝座）。thread = 接管口、exhaust = 排氣口（不同時）。
+   * mount 為舊版欄位（已不使用）。
+   */
+  | { kind: 'valve'; fn: ValveFunction; thread: ThreadSize; exhaust?: ThreadSize; series?: ValveSeries; std?: ThreadStd; mount?: 'body' | 'base' }
+  /** 集裝座：stations 站（裝 series 相同的閥），P 與排氣口在端面；thread 為舊版欄位（已不使用） */
+  | { kind: 'manifold'; stations: number; series?: ValveSeries; thread?: ThreadSize; std?: ThreadStd }
   | { kind: 'cylinder'; bore: number; stroke: number; single?: boolean; std?: ThreadStd }
   | { kind: 'frl'; unit: FrlUnit; thread: ThreadSize; std?: ThreadStd }
   | { kind: 'gauge'; thread: ThreadSize; std?: ThreadStd }
@@ -98,9 +119,6 @@ export function nextSize(size: ThreadSize): ThreadSize {
   return order[Math.min(order.length - 1, i + 1)]
 }
 
-/** 集裝座與底板式閥共用的安裝面名稱 */
-export const baseInterfaceKey = (size: ThreadSize, std: ThreadStd = 'PT') => `通用 ${threadLabel(size, std)} 閥座`
-
 export interface GenericMeta {
   /** 建議的型號（使用者沒給型號時用） */
   modelCode: string
@@ -136,11 +154,13 @@ export function genericMeta(spec: GenericSpec): GenericMeta {
       })
     case 'valve': {
       const label = VALVE_FUNCTION_LABEL[spec.fn]
-      if (spec.mount === 'base') return meta(`底板閥 ${VALVE_SHORT[spec.fn]} ${t(spec.thread)}`, `${label}（底板式，集裝座用 ${t(spec.thread)}）`, 'valve', { type: VALVE_TYPE[spec.fn] })
-      return meta(`電磁閥 ${VALVE_SHORT[spec.fn]} ${t(spec.thread)}`, `${label} ${t(spec.thread)}`, 'valve', { type: VALVE_TYPE[spec.fn] })
+      const series = spec.series ?? seriesOf(spec.thread)
+      return meta(`電磁閥 ${VALVE_SHORT[spec.fn]} ${t(spec.thread)}`, `${label} ${t(spec.thread)}（${series} 系列）`, 'valve', { type: VALVE_TYPE[spec.fn] })
     }
-    case 'manifold':
-      return meta(`集裝座 ${spec.stations} 站 ${t(spec.thread)}`, `集裝座 ${spec.stations} 站（A／B ${t(spec.thread)}）`, 'manifold', { type: 'manifold' })
+    case 'manifold': {
+      const series = spec.series ?? seriesOf(spec.thread)
+      return meta(`集裝座 ${series} 系列 ${spec.stations} 站`, `集裝座 ${spec.stations} 站（${series} 系列閥用，P／排氣 ${t(MANIFOLD_PORT[series])}）`, 'manifold', { type: 'manifold' })
+    }
     case 'cylinder': {
       const type = spec.single ? 'cylinderSingle' : 'cylinderDouble'
       return meta(`氣缸 Ø${spec.bore}×${spec.stroke}`, `${spec.single ? '單動' : '雙動'}氣缸 Ø${spec.bore} × ${spec.stroke}`, 'cylinder', {
@@ -210,7 +230,8 @@ export function genericFromCode(info: CodeInfo): GenericSpec | undefined {
                 : /雙電控/.test(info.name)
                   ? '52Double'
                   : '52Single'
-      return { kind: 'valve', fn, thread: main, std, ...(exhaust && exhaust !== main && { exhaust }) }
+      const series = seriesFromCode(info.series)
+      return { kind: 'valve', fn, thread: main, std, ...(exhaust && exhaust !== main && { exhaust }), ...(series && { series }) }
     }
     case 'cylinder':
       return info.bore && info.stroke ? { kind: 'cylinder', bore: info.bore, stroke: info.stroke, single: /單動/.test(info.name), std } : undefined
@@ -229,8 +250,14 @@ export function genericFromCode(info: CodeInfo): GenericSpec | undefined {
       return { kind: 'frl', unit, thread: size, std }
     }
     case 'manifold':
-      return info.stations ? { kind: 'manifold', stations: info.stations, thread: info.series === '4V100' ? 'M5' : '1/8', std } : undefined
+      return info.stations ? { kind: 'manifold', stations: info.stations, series: seriesFromCode(info.series) ?? 200, std } : undefined
     default:
       return undefined
   }
+}
+
+/** 型號系列（4V200、3V100…）→ 閥的大小系列 */
+export function seriesFromCode(series: string | undefined): ValveSeries | undefined {
+  const m = series && /([1-4])00$/.exec(series)
+  return m ? ((Number(m[1]) * 100) as ValveSeries) : undefined
 }

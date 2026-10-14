@@ -81,7 +81,7 @@ export function copyAttachments(doc: ModuleDoc, products: ProductMap, instanceId
   for (const target of doc.instances.filter((i) => i.productId === productId && i.id !== instanceId)) {
     let any = false
     for (const branch of branches) {
-      if (usedPorts(next).has(`${target.id}:${branch.port}`)) {
+      if (usedPorts(next, products).has(`${target.id}:${branch.port}`)) {
         result.skipped++
         continue
       }

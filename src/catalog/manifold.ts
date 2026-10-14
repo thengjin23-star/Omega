@@ -30,6 +30,19 @@ function outletOf(ports: readonly ProductPort[], letter: 'A' | 'B', n: number): 
   return ports.find((p) => names.includes(norm(p.name)))?.id
 }
 
+/**
+ * 閥底面的埠（依名稱）接到集裝座的哪個共用通路：P → 供氣；EA／EB（R／S）→ 排氣（只有一個排氣口時接它）。
+ */
+export function commonChannelOf(layout: ManifoldLayout, portName: string): string | undefined {
+  const n = norm(portName)
+  const c = layout.common
+  if (COMMON.P.map(norm).includes(n)) return c.P
+  if (COMMON.EA.map(norm).includes(n)) return c.EA ?? c.R
+  if (COMMON.EB.map(norm).includes(n)) return c.EB ?? c.R
+  if (COMMON.R.map(norm).includes(n)) return c.R ?? c.EA ?? c.EB
+  return undefined
+}
+
 /** 依埠的名稱與規格推斷集裝座的通路；沒有安裝面時回傳 undefined */
 export function manifoldLayout(product: Pick<Product, 'ports'>): ManifoldLayout | undefined {
   const mounts = product.ports.filter((p) => p.spec?.kind === 'interface')

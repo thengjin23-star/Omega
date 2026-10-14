@@ -1,10 +1,6 @@
 /// <reference types="node" />
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { Matrix4, Vector3 } from 'three'
 import { describe, expect, it } from 'vitest'
-import { portsFromDefs, type SampleManifest } from '../../catalog/samples'
-import type { Product } from '../../catalog/types'
 import { dot, distance, type Vec3 } from '../../geometry/vec3'
 import { findAdapters, insertAdapter } from '../adapters'
 import { bomToCsv, buildBom } from '../bom'
@@ -20,28 +16,9 @@ import {
   mateRotation,
   removeInstance,
   setMateAngle,
-  type ProductMap,
 } from '../moduleOps'
 import type { ModuleDoc, PortRef } from '../types'
-
-const manifest: SampleManifest = JSON.parse(
-  readFileSync(fileURLToPath(new URL('../../../public/samples/manifest.json', import.meta.url)), 'utf8'),
-)
-const PRODUCTS: ProductMap = Object.fromEntries(
-  manifest.parts.map((def): [string, Product] => [
-    def.modelCode,
-    {
-      id: def.modelCode,
-      modelCode: def.modelCode,
-      name: def.name,
-      category: def.category,
-      source: { fileName: def.file, sha256: def.modelCode, format: 'step', bytes: 0 },
-      ports: portsFromDefs(def.ports),
-      createdAt: 0,
-      updatedAt: 0,
-    },
-  ]),
-)
+import { PRODUCTS } from './sampleModules'
 
 /** 建立模組並加入零件，回傳 { doc, ids: { 別名: instanceId } } */
 function build(parts: Record<string, string>) {
@@ -91,11 +68,11 @@ const xAxisOf = (doc: ModuleDoc, instance: string): Vec3 =>
 const close = (a: Vec3, b: Vec3) => a.forEach((v, i) => expect(v).toBeCloseTo(b[i], 6))
 
 describe('鎖合位置', () => {
-  it('接頭鎖進閥的 A 口：螺紋朝下、肩面貼齊孔口（平移到 (-10, 0, 34)，不旋轉）', () => {
+  it('接頭鎖進閥的 A 口：螺紋朝下、肩面貼齊孔口（平移到 (-6.5, 0, 26)，不旋轉）', () => {
     let { doc, ids } = build({ valve: 'DEMO-VALVE-52-01', fitting: 'DEMO-FITTING-R18-D6' })
     doc = mate(doc, ref(doc, ids.valve, 'A'), ref(doc, ids.fitting, '1'))
     expectMated(doc, ref(doc, ids.valve, 'A'), ref(doc, ids.fitting, '1'))
-    close(translationOf(doc, ids.fitting), [-10, 0, 34])
+    close(translationOf(doc, ids.fitting), [-6.5, 0, 26])
     close(xAxisOf(doc, ids.fitting), [1, 0, 0])
   })
 
@@ -108,8 +85,19 @@ describe('鎖合位置', () => {
     expect(setMateAngle(doc, doc.mates[0].id, -90).mates[0].angle).toBe(270)
   })
 
-  it('底板式電磁閥以安裝面裝到集裝座第 1 站：正好坐在站位上', () => {
-    let { doc, ids } = build({ manifold: 'DEMO-MANIFOLD-4', valve: 'DEMO-VALVE-VB' })
+  it('電磁閥以底面的安裝面裝到集裝座第 1 站：橫跨在站位上（閥的長邊沿集裝座的寬度）', () => {
+    let { doc, ids } = build({ manifold: 'DEMO-MANIFOLD-4', valve: 'DEMO-VALVE-52-01' })
+    doc = mate(doc, ref(doc, ids.manifold, '站1'), ref(doc, ids.valve, '安裝面'))
+    // 站位在 x = 14 + 10（每站 20 mm），集裝座高 22；閥的 X（長邊）轉到集裝座的 Y
+    close(translationOf(doc, ids.valve), [24, 0, 22])
+    close(xAxisOf(doc, ids.valve), [0, 1, 0])
+    // 閥底面的 P 正好對準集裝座的供氣通道（y = 0），EA／EB 對準兩條排氣通道
+    close(world(doc, ref(doc, ids.valve, 'P')).origin, [24, 0, 22])
+    close(world(doc, ref(doc, ids.valve, 'EA')).origin, [24, -13, 22])
+  })
+
+  it('底板式電磁閥以安裝面裝到底板式集裝座第 1 站：正好坐在站位上', () => {
+    let { doc, ids } = build({ manifold: 'SUBBASE-MANIFOLD-4', valve: 'SUBBASE-VALVE-VB' })
     doc = mate(doc, ref(doc, ids.manifold, '站1'), ref(doc, ids.valve, '安裝面'))
     close(translationOf(doc, ids.valve), [10, 0, 20])
     close(xAxisOf(doc, ids.valve), [1, 0, 0])
@@ -130,7 +118,7 @@ describe('鎖合位置', () => {
   })
 
   it('三層串接：集裝座 P ← 轉接頭 ← 接頭', () => {
-    let { doc, ids } = build({ manifold: 'DEMO-MANIFOLD-4', bush: 'DEMO-BUSH-R14-RC18', fitting: 'DEMO-FITTING-R18-D6' })
+    let { doc, ids } = build({ manifold: 'SUBBASE-MANIFOLD-4', bush: 'DEMO-BUSH-R14-RC18', fitting: 'DEMO-FITTING-R18-D6' })
     doc = mate(doc, ref(doc, ids.manifold, 'P'), ref(doc, ids.bush, '1'))
     doc = mate(doc, ref(doc, ids.bush, '2'), ref(doc, ids.fitting, '1'))
     expectMated(doc, ref(doc, ids.manifold, 'P'), ref(doc, ids.bush, '1'))
@@ -174,7 +162,7 @@ describe('群組移動（re-root）與限制', () => {
   })
 
   it('移除中間的零件：子零件保持原位，成為獨立群組', () => {
-    let { doc, ids } = build({ manifold: 'DEMO-MANIFOLD-4', bush: 'DEMO-BUSH-R14-RC18', fitting: 'DEMO-FITTING-R18-D6' })
+    let { doc, ids } = build({ manifold: 'SUBBASE-MANIFOLD-4', bush: 'DEMO-BUSH-R14-RC18', fitting: 'DEMO-FITTING-R18-D6' })
     doc = mate(doc, ref(doc, ids.manifold, 'P'), ref(doc, ids.bush, '1'))
     doc = mate(doc, ref(doc, ids.bush, '2'), ref(doc, ids.fitting, '1'))
     const before = computeTransforms(doc, PRODUCTS).transforms[ids.fitting]
@@ -194,7 +182,7 @@ describe('搭配檢查、轉接頭、BOM', () => {
   })
 
   it('找出並插入轉接頭：集裝座 P（Rc1/4 母）接 R1/8 接頭', () => {
-    let { doc, ids } = build({ manifold: 'DEMO-MANIFOLD-4', fitting: 'DEMO-FITTING-R18-D6' })
+    let { doc, ids } = build({ manifold: 'SUBBASE-MANIFOLD-4', fitting: 'DEMO-FITTING-R18-D6' })
     const a = ref(doc, ids.manifold, 'P')
     const b = ref(doc, ids.fitting, '1')
     const options = findAdapters(Object.values(PRODUCTS), getPort(doc, PRODUCTS, a)!.spec!, getPort(doc, PRODUCTS, b)!.spec!)

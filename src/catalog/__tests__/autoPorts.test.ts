@@ -5,18 +5,19 @@ import { autoPorts } from '../autoPorts'
 import { decodeModelCode } from '../makerCodes'
 import { createRaycaster } from '../openTester'
 import type { ProductPort } from '../types'
-import { nodeParser, readSample, sampleManifest } from './nodeHelpers'
+import { SUBBASE } from '../../assembly/__tests__/sampleModules'
+import { nodeParser, readFixture, readSample, sampleManifest } from './nodeHelpers'
 
 const manifest = sampleManifest()
 
-async function detect(file: string, text = file) {
-  const tess = await nodeParser(await readSample(file), 'step')
+async function detect(file: string, text = file, read = readSample) {
+  const tess = await nodeParser(await read(file), 'step')
   return autoPorts(tess, createRaycaster(tess), { text })
 }
 
 /** 範例檔裡螺紋與快插的埠（安裝面靠孔位找不到，不比） */
 const pipingPorts = (file: string) => {
-  const def = manifest.parts.find((p) => p.file === file)!
+  const def = [...manifest.parts, ...SUBBASE].find((p) => p.file === file)!
   return def.ports.flatMap((p) => {
     if (/安裝面/.test(p.spec)) return []
     const r = parseSpec(p.spec, { gender: p.shape === 'hole' ? 'female' : 'male' })
@@ -59,10 +60,18 @@ describe('autoPorts：從 3D 模型自動找埠（範例零件）', () => {
     })
   }
 
-  it('集裝座：A1～A4／B1～B4、P、EA／EB；站位的定位孔不當成埠', async () => {
+  it('集裝座（亞德客式）：端面的 P、EA、EB；站位的長孔與螺絲孔不當成埠', async () => {
     const r = await detect('DEMO-MANIFOLD-4.step')
     expect(r.category).toBe('manifold')
     const expected = pipingPorts('DEMO-MANIFOLD-4.step')
+    expect(r.ports).toHaveLength(expected.length)
+    for (const e of expected) expect(found(r.ports, e)?.name, e.name).toBe(e.name)
+  })
+
+  it('底板式集裝座：A1～A4／B1～B4、P、EA／EB；站位的定位孔不當成埠', async () => {
+    const r = await detect('SUBBASE-MANIFOLD-4.step', 'SUBBASE-MANIFOLD-4.step', readFixture)
+    expect(r.category).toBe('manifold')
+    const expected = pipingPorts('SUBBASE-MANIFOLD-4.step')
     expect(r.ports).toHaveLength(expected.length)
     for (const e of expected) expect(found(r.ports, e), e.name).toBeDefined()
     const names = r.ports.map((p) => p.name).sort()
@@ -93,7 +102,11 @@ describe('autoPorts：從 3D 模型自動找埠（範例零件）', () => {
     const r = autoPorts(tess, createRaycaster(tess), { code })
     expect(r.category).toBe('valve')
     expect(r.name).toBe('5/2 單電控電磁閥 G1/8')
-    expect(new Set(r.ports.map((p) => formatSpecShort(p.spec!)))).toEqual(new Set(['G1/8']))
+    expect(new Set(r.ports.filter((p) => p.spec?.kind === 'thread').map((p) => formatSpecShort(p.spec!)))).toEqual(new Set(['G1/8']))
+    // 4V 系列：P 與排氣口所在的面加上裝集裝座的安裝面（100 系列），P／EA／EB 由它封住
+    const mount = r.ports.find((p) => p.spec?.kind === 'interface')!
+    expect(mount).toMatchObject({ name: '安裝面', spec: { kind: 'interface', key: '100 系列閥座', role: 'plug' } })
+    expect(r.ports.filter((p) => p.sealedBy === mount.id).map((p) => p.name).sort()).toEqual(['EA', 'EB', 'P'])
   })
 
   it('已經有的埠不重複加入', async () => {

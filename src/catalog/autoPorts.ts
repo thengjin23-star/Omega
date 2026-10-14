@@ -11,6 +11,7 @@
  */
 import { add, cross, distance, dot, length, normalize, perpendicular, scale, sub, type Vec3 } from '../geometry/vec3'
 import { formatSpecShort, parseSpec, suggestByDiameter, type PortSpec, type Suggestion, type ThreadSpec } from '../threads'
+import { seriesFromCode, seriesInterfaceKey } from './generic/genericParts'
 import { analyzeFace } from './faceAnalysis'
 import type { CodeInfo, ExpectedPort } from './makerCodes'
 import type { Raycaster } from './openTester'
@@ -361,12 +362,37 @@ export function autoPorts(
   const result = detectPorts(portCandidates(tess, raycast), tess, options)
   // 已有的埠（使用者定義過）附近不重複加入
   const fresh = result.ports.filter((p) => !(options.existing ?? []).some((e) => distance(e.frame.origin, p.candidate.origin) < 1))
+  let ports = fresh.filter((p) => p.confidence === 'sure').map(toProductPort)
+  // 型號認得的電磁閥（例如 4V210-08）：底面加上裝集裝座的安裝面，底面的 P／排氣口由它封住
+  const series = result.category === 'valve' ? seriesFromCode(options.code?.series) : undefined
+  if (series && !(options.existing ?? []).some((p) => p.spec?.kind === 'interface')) ports = withValveMount(ports, series)
   return {
-    ports: fresh.filter((p) => p.confidence === 'sure').map(toProductPort),
+    ports,
     maybe: fresh.filter((p) => p.confidence === 'maybe'),
     category: result.category,
     name: result.name,
   }
+}
+
+/** 閥底面的 P、EA、EB（或 P、R）在同一面：加上安裝面（與通用集裝座的站位相同：原點偏離 P 口 W/2-3） */
+function withValveMount(ports: ProductPort[], series: 100 | 200 | 300 | 400): ProductPort[] {
+  const p = ports.find((x) => x.name === 'P')
+  const exhausts = ports.filter((x) => ['EA', 'EB', 'R'].includes(x.name) && dot(x.frame.axis, p?.frame.axis ?? [0, 0, 0]) > 0.99)
+  if (!p || !exhausts.length) return ports
+  const axis = p.frame.axis
+  // 閥的長邊：EA → EB（3 口閥：P → R）
+  const from = exhausts.find((x) => x.name === 'EA')?.frame.origin ?? p.frame.origin
+  const to = exhausts.find((x) => x.name !== 'EA')?.frame.origin ?? p.frame.origin
+  const along = normalize(sub(to, from))
+  if (length(along) < 0.5) return ports
+  const up = scale(axis, -1)
+  const side = cross(up, along)
+  const offset = { 100: 6, 200: 8, 300: 11, 400: 15 }[series]
+  const spec = parseSpec(`安裝面：${seriesInterfaceKey(series)}`, { interfaceRole: 'plug' })
+  if (!spec.ok) return ports
+  const mount = makePort({ name: '安裝面', spec: spec.spec, origin: add(p.frame.origin, scale(side, -offset)), axis, ref: along, detected: { shape: 'plane', auto: true } })
+  const sealed = new Set([p, ...exhausts])
+  return [...ports.map((x) => (sealed.has(x) ? { ...x, sealedBy: mount.id } : x)), mount]
 }
 
 export function toProductPort(p: DetectedPort): ProductPort {
@@ -551,7 +577,18 @@ function nameValve(ports: DetectedPort[], set: Setter): void {
 function nameManifold(ports: DetectedPort[], set: Setter): void {
   const faces = groupByFace(ports).sort((a, b) => b.length - a.length)
   const [rowA, rowB] = faces
-  if (!rowA || !rowB || rowA.length !== rowB.length || rowA.length < 2) return
+  if (!rowA || !rowB || rowA.length !== rowB.length || rowA.length < 2) {
+    // A／B 在閥上的集裝座（例如亞德客 200M）：端面只有 P 與排氣口
+    const end = faces[0]
+    if (!end || end.length < 2) return
+    const sized = bySize(end)
+    const sameSize = sized[0].candidate.diameter - sized[sized.length - 1].candidate.diameter < 0.5
+    const row = sortAlong(end, spreadAxis(end))
+    const p = sameSize && row.length === 3 ? row[1] : sized[0]
+    set(p, 'P')
+    row.filter((x) => x !== p).forEach((e, i) => set(e, i === 0 ? 'EA' : i === 1 ? 'EB' : `R${i - 1}`))
+    return
+  }
   const axis = spreadAxis(rowA)
   sortAlong(rowA, axis).forEach((p, i) => set(p, `A${i + 1}`))
   sortAlong(rowB, axis).forEach((p, i) => set(p, `B${i + 1}`))

@@ -42,11 +42,17 @@ export function groupOf(doc: ModuleDoc, instance: string): Set<string> {
 }
 
 /** 已經被鎖合或 PU 管使用的埠（instance:port） */
-export function usedPorts(doc: ModuleDoc): Set<string> {
-  return new Set([
+export function usedPorts(doc: ModuleDoc, products?: ProductMap): Set<string> {
+  const used = new Set([
     ...doc.mates.flatMap((m) => [`${m.parent.instance}:${m.parent.port}`, `${m.child.instance}:${m.child.port}`]),
     ...(doc.tubes ?? []).flatMap((t) => [`${t.a.instance}:${t.a.port}`, `${t.b.instance}:${t.b.port}`]),
   ])
+  // 安裝面已經裝上時，被它封住的埠（例如閥底面的 P／排氣口）也算接了
+  if (products)
+    for (const inst of doc.instances)
+      for (const port of products[inst.productId]?.ports ?? [])
+        if (port.sealedBy && used.has(`${inst.id}:${port.sealedBy}`)) used.add(`${inst.id}:${port.id}`)
+  return used
 }
 
 /** PU 管兩端埠在模組座標中的位置與朝外的軸向；零件或埠已不存在時回傳 undefined */
@@ -172,7 +178,7 @@ export function addTube(
   const pa = getPort(doc, products, a)
   const pb = getPort(doc, products, b)
   if (!pa || !pb) return { error: 'missing-port' }
-  const used = usedPorts(doc)
+  const used = usedPorts(doc, products)
   if (used.has(`${a.instance}:${a.port}`) || used.has(`${b.instance}:${b.port}`)) return { error: 'port-in-use' }
   const check = tubeCheck(pa, pb)
   if (!check.ok) return { error: check.error }
@@ -237,7 +243,7 @@ export function connect(
   if (parent.instance === child.instance) return { error: 'same-part' }
   if (!getPort(doc, products, parent) || !getPort(doc, products, child)) return { error: 'missing-port' }
   if (groupOf(doc, parent.instance).has(child.instance)) return { error: 'already-connected' }
-  const used = usedPorts(doc)
+  const used = usedPorts(doc, products)
   if (used.has(`${parent.instance}:${parent.port}`) || used.has(`${child.instance}:${child.port}`)) return { error: 'port-in-use' }
 
   const rerooted = reroot(doc, products, child.instance)

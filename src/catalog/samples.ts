@@ -16,6 +16,10 @@ export interface SamplePortDef {
   shape: 'hole' | 'boss'
   origin: Vec3
   axis: Vec3
+  /** 繞軸旋轉的基準（安裝面靠它決定方向；沒給時用預設） */
+  ref?: Vec3
+  /** 被哪個埠（名稱）封住：見 ProductPort.sealedBy */
+  sealedBy?: string
 }
 
 /** 範例零件的氣動功能；ports 以埠名稱對應（未提供時依名稱自動配對） */
@@ -40,10 +44,15 @@ export interface SampleManifest {
 }
 
 export function portsFromDefs(defs: readonly SamplePortDef[]): ProductPort[] {
-  return defs.map((d) => {
+  const ports = defs.map((d) => {
     const parsed = parseSpec(d.spec, { gender: d.shape === 'hole' ? 'female' : 'male', interfaceRole: d.role })
     if (!parsed.ok) throw new Error(`範例埠「${d.name}」的規格錯誤：${parsed.error}`)
-    return makePort({ name: d.name, spec: parsed.spec, origin: d.origin, axis: d.axis, detected: { shape: d.shape } })
+    return makePort({ name: d.name, spec: parsed.spec, origin: d.origin, axis: d.axis, ref: d.ref, detected: { shape: d.shape } })
+  })
+  // 封住的埠：名稱 → id
+  return ports.map((p, i) => {
+    const by = defs[i].sealedBy && ports.find((q) => q.name === defs[i].sealedBy)
+    return by ? { ...p, sealedBy: by.id } : p
   })
 }
 
@@ -78,6 +87,11 @@ export async function installSamples(
       existing++
       continue
     }
+    // 範例改版（檔案內容不同）：舊版留著（模組可能用到），型號加註「舊版」以免與新版同名
+    if (status === 'new')
+      for (const old of await store.listProducts())
+        if (old.id !== product.id && old.modelCode === def.modelCode && old.source?.fileName === def.file)
+          await store.putProduct({ ...old, modelCode: `${def.modelCode}（舊版）`, updatedAt: Date.now() })
     const ports = portsFromDefs(def.ports)
     await store.putProduct({
       ...product,
