@@ -20,11 +20,10 @@ BSL01 ×2 → EA、EB
 
 /** 範例零件的清單（產品庫裝了範例零件時可以一鍵填入） */
 const DEMO_LIST = `DEMO-MANIFOLD-4
-DEMO-VALVE-VB ×4
+DEMO-VALVE-52-01 ×4
 DEMO-FITTING-R18-D6 ×4 → A
 DEMO-FITTING-R18-D4 ×4 → B
-DEMO-BUSH-R14-RC18 → P
-DEMO-FITTING-R18-D6 → DEMO-BUSH-R14-RC18
+DEMO-FITTING-R18-D6 → P
 DEMO-SILENCER-R18 ×2 → EA、EB`
 
 type RowStatus = { level: 'ok' | 'generic' | 'warn' | 'error'; text: string; similar?: Product[] }

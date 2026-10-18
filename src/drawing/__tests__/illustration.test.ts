@@ -5,6 +5,7 @@ import {
   illustrationSheet,
   labelAt,
   layoutCallouts,
+  leaderCrossings,
   leaderOrigin,
   outlineMask,
   spread,
@@ -119,6 +120,17 @@ describe('layoutCallouts', () => {
     const left = labels.filter((l) => l.side === 'left').sort((a, b) => a.y - b.y)
     const anchorsY = left.map((l) => l.anchors[0][1])
     expect([...anchorsY].sort((a, b) => a - b)).toEqual(anchorsY)
+  })
+
+  it('兩個標註的箭頭交錯時，改放到其他一側讓引線不交叉', () => {
+    // 閥島：4 顆閥與 8 個接頭都在上方、左右交錯
+    const groups = [
+      { key: 'valve', text: '4V210-08', anchors: [[420, 220], [520, 225], [620, 230], [720, 235]] as Pt[] },
+      { key: 'fitting', text: 'PC6-02', anchors: [[400, 180], [460, 182], [500, 185], [560, 188], [600, 190], [660, 192], [700, 195], [760, 198]] as Pt[] },
+    ]
+    const labels = layoutCallouts({ image, canvas, measure, groups })
+    expect(leaderCrossings(labels)).toBe(0)
+    for (const l of labels) expect(overlaps(l, { ...image, key: '', text: '', side: 'left', anchors: [] })).toBe(false)
   })
 
   it('一側放不下時改放到其他側', () => {

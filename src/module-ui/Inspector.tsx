@@ -209,7 +209,7 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
   const branches = useMemo(() => (same ? attachmentBranches(doc, instanceId).length : 0), [doc, instanceId, same])
   // 有幾個空著的埠有搭配記錄
   const fillable = useMemo(() => {
-    const used = usedPorts(doc)
+    const used = usedPorts(doc, products)
     return product.ports.filter(
       (port) =>
         !used.has(`${instanceId}:${port.id}`) &&
@@ -575,6 +575,8 @@ function PortRow({ instanceId, product, portId }: { instanceId: string; product:
   const tube = doc.tubes?.find((t) => is(t.a) || is(t.b))
   const tubeOther = tube && (is(tube.a) ? tube.b : tube.a)
   const isSupply = !!doc.supply && is(doc.supply)
+  // 被安裝面封住（閥裝在集裝座上）：底面的 P／排氣口由集裝座供氣、排氣
+  const sealed = !mate && !tube && !!port.sealedBy && doc.mates.some((m) => [m.parent, m.child].some((r) => r.instance === instanceId && r.port === port.sealedBy))
   const isFrom = connectFrom?.instance === instanceId && connectFrom.port === portId
   return (
     <li className={`rounded-md border p-2 ${isFrom ? 'border-blue-400 bg-blue-50' : 'border-slate-200'}`}>
@@ -600,16 +602,16 @@ function PortRow({ instanceId, product, portId }: { instanceId: string; product:
           </button>
         ) : (
           <span className={`truncate ${isSupply ? 'font-medium text-red-700' : ''}`}>
-            {other ? `已接：${portLabel(doc, products, other)}` : isSupply ? '供氣口（模擬時由這裡供氣）' : '未連接'}
+            {other ? `已接：${portLabel(doc, products, other)}` : isSupply ? '供氣口（模擬時由這裡供氣）' : sealed ? '裝在集裝座上：由集裝座供氣／排氣' : '未連接'}
           </span>
         )}
         <span className="flex shrink-0 gap-1">
-          {!mate && !tube && port.spec?.kind !== 'interface' && (
+          {!mate && !tube && !sealed && port.spec?.kind !== 'interface' && (
             <Button size="sm" variant="ghost" onClick={() => setSupply(isSupply ? undefined : { instance: instanceId, port: portId })} title="模擬時由這個埠供氣">
               {isSupply ? '取消供氣' : '設為供氣口'}
             </Button>
           )}
-          {!mate && !tube && (
+          {!mate && !tube && !sealed && (
             <Button size="sm" variant="ghost" onClick={() => clickPort({ instance: instanceId, port: portId })}>
               {isFrom ? '取消' : '連接'}
             </Button>
@@ -654,15 +656,18 @@ function AutoPortsButton({ product }: { product: Product }) {
 function AutoPortsNotice({ product }: { product: Product }) {
   const maybe = useModuleStore((s) => s.maybePorts[product.id])
   const { confirmAutoPorts, addDetectedPorts } = useModuleStore.getState()
-  const auto = product.ports.filter((p) => p.detected?.auto).length
+  const autoPorts = product.ports.filter((p) => p.detected?.auto)
+  const auto = autoPorts.filter((p) => p.spec?.kind !== 'interface').length
+  const mount = autoPorts.find((p) => p.spec?.kind === 'interface')
   const remaining = (maybe ?? []).filter((m) => !product.ports.some((p) => Math.hypot(...m.candidate.origin.map((v, i) => v - p.frame.origin[i])) < 1))
-  if (!auto && !remaining.length) return null
+  if (!auto && !mount && !remaining.length) return null
   return (
     <div className="mb-2 space-y-1.5 rounded-md bg-violet-50 p-2 text-xs leading-5 text-violet-900" data-auto-ports={auto}>
-      {auto > 0 && (
+      {(auto > 0 || mount) && (
         <div className="flex items-start justify-between gap-2">
           <span>
             {auto} 個埠是由孔徑<strong>自動判斷</strong>的：請看一下名稱與規格（PT／G 等牙型以型號為準），不對的按「編輯」修改。
+            {mount?.spec?.kind === 'interface' && <> 底面另加上「{mount.spec.key}」安裝面，P／排氣由集裝座供應。</>}
           </span>
           <Button size="sm" className="shrink-0 whitespace-nowrap" onClick={() => void confirmAutoPorts(product.id)}>
             全部確認

@@ -4,7 +4,7 @@
     {
       "file": "DEMO-VALVE-52-01.step",
       "modelCode": "DEMO-VALVE-52-01",
-      "name": "範例 5/2 電磁閥（管接式 Rc1/8）",
+      "name": "範例 5/2 單電控電磁閥 Rc1/8（A／B 在上、P／排氣在底面）",
       "category": "valve",
       "pneumatic": {
         "type": "valve52Single"
@@ -15,9 +15,9 @@
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            -10,
+            -6.5,
             0,
-            34
+            26
           ],
           "axis": [
             0,
@@ -30,9 +30,9 @@
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            10,
+            6.5,
             0,
-            34
+            26
           ],
           "axis": [
             0,
@@ -45,15 +45,16 @@
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            -18,
-            -11,
-            17
+            -13,
+            0,
+            0
           ],
           "axis": [
             0,
-            -1,
-            0
-          ]
+            0,
+            -1
+          ],
+          "sealedBy": "安裝面"
         },
         {
           "name": "P",
@@ -61,27 +62,50 @@
           "shape": "hole",
           "origin": [
             0,
-            -11,
-            17
+            0,
+            0
           ],
           "axis": [
             0,
-            -1,
-            0
-          ]
+            0,
+            -1
+          ],
+          "sealedBy": "安裝面"
         },
         {
           "name": "EB",
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            18,
-            -11,
-            17
+            13,
+            0,
+            0
           ],
           "axis": [
             0,
-            -1,
+            0,
+            -1
+          ],
+          "sealedBy": "安裝面"
+        },
+        {
+          "name": "安裝面",
+          "spec": "安裝面：100 系列閥座",
+          "role": "plug",
+          "shape": "hole",
+          "origin": [
+            0,
+            -6,
+            0
+          ],
+          "axis": [
+            0,
+            0,
+            -1
+          ],
+          "ref": [
+            1,
+            0,
             0
           ]
         }
@@ -373,222 +397,38 @@
     {
       "file": "DEMO-MANIFOLD-4.step",
       "modelCode": "DEMO-MANIFOLD-4",
-      "name": "範例集裝座 4 站（Rc1/8）",
+      "name": "範例集裝座 4 站（100 系列，P／EA／EB Rc1/8 在端面）",
       "category": "manifold",
       "pneumatic": {
         "type": "manifold"
       },
       "ports": [
         {
-          "name": "站1",
-          "spec": "安裝面：DEMO-VB 閥座",
-          "role": "socket",
-          "shape": "hole",
-          "origin": [
-            10,
-            0,
-            20
-          ],
-          "axis": [
-            0,
-            0,
-            1
-          ]
-        },
-        {
-          "name": "A1",
+          "name": "EA",
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            10,
-            -20,
-            10
+            0,
+            -13,
+            11
           ],
           "axis": [
-            0,
             -1,
-            0
-          ]
-        },
-        {
-          "name": "B1",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            10,
-            20,
-            10
-          ],
-          "axis": [
             0,
-            1,
-            0
-          ]
-        },
-        {
-          "name": "站2",
-          "spec": "安裝面：DEMO-VB 閥座",
-          "role": "socket",
-          "shape": "hole",
-          "origin": [
-            30,
-            0,
-            20
-          ],
-          "axis": [
-            0,
-            0,
-            1
-          ]
-        },
-        {
-          "name": "A2",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            30,
-            -20,
-            10
-          ],
-          "axis": [
-            0,
-            -1,
-            0
-          ]
-        },
-        {
-          "name": "B2",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            30,
-            20,
-            10
-          ],
-          "axis": [
-            0,
-            1,
-            0
-          ]
-        },
-        {
-          "name": "站3",
-          "spec": "安裝面：DEMO-VB 閥座",
-          "role": "socket",
-          "shape": "hole",
-          "origin": [
-            50,
-            0,
-            20
-          ],
-          "axis": [
-            0,
-            0,
-            1
-          ]
-        },
-        {
-          "name": "A3",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            50,
-            -20,
-            10
-          ],
-          "axis": [
-            0,
-            -1,
-            0
-          ]
-        },
-        {
-          "name": "B3",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            50,
-            20,
-            10
-          ],
-          "axis": [
-            0,
-            1,
-            0
-          ]
-        },
-        {
-          "name": "站4",
-          "spec": "安裝面：DEMO-VB 閥座",
-          "role": "socket",
-          "shape": "hole",
-          "origin": [
-            70,
-            0,
-            20
-          ],
-          "axis": [
-            0,
-            0,
-            1
-          ]
-        },
-        {
-          "name": "A4",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            70,
-            -20,
-            10
-          ],
-          "axis": [
-            0,
-            -1,
-            0
-          ]
-        },
-        {
-          "name": "B4",
-          "spec": "Rc1/8",
-          "shape": "hole",
-          "origin": [
-            70,
-            20,
-            10
-          ],
-          "axis": [
-            0,
-            1,
             0
           ]
         },
         {
           "name": "P",
-          "spec": "Rc1/4",
-          "shape": "hole",
-          "origin": [
-            0,
-            0,
-            10
-          ],
-          "axis": [
-            -1,
-            0,
-            0
-          ]
-        },
-        {
-          "name": "EA",
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            80,
-            -9,
-            10
+            0,
+            0,
+            11
           ],
           "axis": [
-            1,
+            -1,
             0,
             0
           ]
@@ -598,41 +438,98 @@
           "spec": "Rc1/8",
           "shape": "hole",
           "origin": [
-            80,
-            9,
-            10
+            0,
+            13,
+            11
           ],
           "axis": [
-            1,
+            -1,
             0,
             0
           ]
-        }
-      ]
-    },
-    {
-      "file": "DEMO-VALVE-VB.step",
-      "modelCode": "DEMO-VALVE-VB",
-      "name": "範例底板式電磁閥（集裝座用）",
-      "category": "valve",
-      "pneumatic": {
-        "type": "valve52Single"
-      },
-      "ports": [
+        },
         {
-          "name": "安裝面",
-          "spec": "安裝面：DEMO-VB 閥座",
-          "role": "plug",
+          "name": "站1",
+          "spec": "安裝面：100 系列閥座",
+          "role": "socket",
           "shape": "hole",
           "origin": [
+            30,
             0,
-            0,
-            0
+            22
           ],
           "axis": [
             0,
             0,
-            -1
+            1
+          ],
+          "ref": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "name": "站2",
+          "spec": "安裝面：100 系列閥座",
+          "role": "socket",
+          "shape": "hole",
+          "origin": [
+            50,
+            0,
+            22
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "ref": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "name": "站3",
+          "spec": "安裝面：100 系列閥座",
+          "role": "socket",
+          "shape": "hole",
+          "origin": [
+            70,
+            0,
+            22
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "ref": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "name": "站4",
+          "spec": "安裝面：100 系列閥座",
+          "role": "socket",
+          "shape": "hole",
+          "origin": [
+            90,
+            0,
+            22
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ],
+          "ref": [
+            0,
+            1,
+            0
           ]
         }
       ]

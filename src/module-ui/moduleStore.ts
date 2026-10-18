@@ -413,7 +413,7 @@ export const useModuleStore = create<State>()((set, get) => {
       info('PU 管只能接在快插接頭的插管端（規格為「Ø6 快插」這類）')
       return
     }
-    if (ops.usedPorts(doc).has(`${ref.instance}:${ref.port}`)) {
+    if (ops.usedPorts(doc, products).has(`${ref.instance}:${ref.port}`)) {
       info('這個快插接頭已經接了零件或管子')
       return
     }
@@ -582,7 +582,10 @@ export const useModuleStore = create<State>()((set, get) => {
     const maybe = r.maybe.length ? `另有 ${r.maybe.length} 個孔不確定是不是埠（可能是固定孔），可在右側加入。` : ''
     if (!r.added.length)
       return `已加入「${next.modelCode}」，但模型上沒有找到埠（可能沒有畫出孔）。${maybe}請按「新增埠」點選位置，或在產品庫用「產生通用 3D」。`
-    return `已加入「${next.modelCode}」${next.name ? `（${next.name}）` : ''}：自動找到 ${r.added.length} 個埠 — ${describePorts(r.added)}。請在右側確認，名稱或規格不對可以直接改。${maybe}`
+    const ports = r.added.filter((p) => p.spec?.kind !== 'interface')
+    const mounts = r.added.filter((p) => p.spec?.kind === 'interface')
+    const mount = mounts.length ? `另依型號加上「${mounts.map((p) => formatSpecShort(p.spec!)).join('、')}」安裝面，可以直接裝到集裝座。` : ''
+    return `已加入「${next.modelCode}」${next.name ? `（${next.name}）` : ''}：自動找到 ${ports.length} 個埠 — ${describePorts(ports)}。${mount}請在右側確認，名稱或規格不對可以直接改。${maybe}`
   }
 
   /** 清單上找不到、或沒有 3D 檔的型號：依型號規則（或 AI）產生通用 3D */
@@ -839,7 +842,7 @@ export const useModuleStore = create<State>()((set, get) => {
       const inst = doc.instances.find((i) => i.id === instanceId)
       const product = inst && products[inst.productId]
       if (!inst || !product) return
-      const used = ops.usedPorts(doc)
+      const used = ops.usedPorts(doc, get().products)
       let next = doc
       const added: string[] = []
       let noRecord = 0
@@ -885,8 +888,10 @@ export const useModuleStore = create<State>()((set, get) => {
         }
       }
       const index = productIndex(Object.values(get().products))
+      // 補上通用零件後重新解析：「→ 4V210-08 的 A」這類指定，型號現在才認得
+      const entries = meta.generic ? parsePartsList(text, index.isCode).entries : parsed.entries
       const items: AssembleItem[] = []
-      for (const e of parsed.entries) {
+      for (const e of entries) {
         const product = index.find(e.code)
         if (!product) {
           outcome.notFound.push({ line: e.line, code: e.code, similar: index.similar(e.code).map((p) => p.modelCode) })
@@ -1307,8 +1312,8 @@ export const useModuleStore = create<State>()((set, get) => {
         clickTubePort(ref)
         return
       }
-      const { connectFrom, doc } = get()
-      if (ops.usedPorts(doc).has(`${ref.instance}:${ref.port}`)) {
+      const { connectFrom, doc, products } = get()
+      if (ops.usedPorts(doc, products).has(`${ref.instance}:${ref.port}`)) {
         info('這個埠已經接了零件；要改接請先在「檢查」頁拆開')
         return
       }

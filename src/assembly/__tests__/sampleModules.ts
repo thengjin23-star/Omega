@@ -1,14 +1,49 @@
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { pneumaticFromDef, portsFromDefs, type SampleManifest } from '../../catalog/samples'
+import { pneumaticFromDef, portsFromDefs, type SampleManifest, type SamplePartDef, type SamplePortDef } from '../../catalog/samples'
 import type { Product } from '../../catalog/types'
 import { addInstance, connect, createModule, type ProductMap } from '../moduleOps'
 import type { ModuleDoc, PortRef } from '../types'
 
 const manifest: SampleManifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../public/samples/manifest.json', import.meta.url)), 'utf8'))
+
+/**
+ * 底板式（A／B 從集裝座接出）的集裝座與閥：範例零件改成亞德客式（A／B 在閥上）之後，
+ * 留在測試中驗證底板式的路徑（使用者自己匯入的底板式集裝座仍然支援）。
+ * 集裝座的 STEP 檔在 src/catalog/__tests__/fixtures/（自動找埠的測試用）
+ */
+const SUBBASE_KEY = '安裝面：SUBBASE 閥座'
+export const SUBBASE: SamplePartDef[] = [
+  {
+    file: 'SUBBASE-MANIFOLD-4.step',
+    modelCode: 'SUBBASE-MANIFOLD-4',
+    name: '底板式集裝座 4 站（Rc1/8）',
+    category: 'manifold',
+    pneumatic: { type: 'manifold' },
+    ports: [
+      ...[10, 30, 50, 70].flatMap((x, i): SamplePortDef[] => [
+        { name: `站${i + 1}`, spec: SUBBASE_KEY, role: 'socket', shape: 'hole', origin: [x, 0, 20], axis: [0, 0, 1] },
+        { name: `A${i + 1}`, spec: 'Rc1/8', shape: 'hole', origin: [x, -20, 10], axis: [0, -1, 0] },
+        { name: `B${i + 1}`, spec: 'Rc1/8', shape: 'hole', origin: [x, 20, 10], axis: [0, 1, 0] },
+      ]),
+      { name: 'P', spec: 'Rc1/4', shape: 'hole', origin: [0, 0, 10], axis: [-1, 0, 0] },
+      { name: 'EA', spec: 'Rc1/8', shape: 'hole', origin: [80, -9, 10], axis: [1, 0, 0] },
+      { name: 'EB', spec: 'Rc1/8', shape: 'hole', origin: [80, 9, 10], axis: [1, 0, 0] },
+    ],
+  },
+  {
+    file: 'SUBBASE-VALVE-VB.step',
+    modelCode: 'SUBBASE-VALVE-VB',
+    name: '底板式電磁閥（集裝座用）',
+    category: 'valve',
+    pneumatic: { type: 'valve52Single' },
+    ports: [{ name: '安裝面', spec: SUBBASE_KEY, role: 'plug', shape: 'hole', origin: [0, 0, 0], axis: [0, 0, -1] }],
+  },
+]
+
 export const PRODUCTS: ProductMap = Object.fromEntries(
-  manifest.parts.map((def): [string, Product] => {
+  [...manifest.parts, ...SUBBASE].map((def): [string, Product] => {
     const ports = portsFromDefs(def.ports)
     return [
       def.modelCode,
@@ -51,12 +86,12 @@ export function builder() {
   return { add, ref, mate, get doc() { return doc }, set doc(d: ModuleDoc) { doc = d }, ids }
 }
 
-/** 閥島：集裝座＋2 顆底板閥＋A1、B1 接頭＋EA、EB 消音器，供氣接在集裝座 P */
+/** 底板式閥島：集裝座＋2 顆底板閥＋A1、B1 接頭＋EA、EB 消音器，供氣接在集裝座 P */
 export function valveIsland(withSilencers = true) {
   const b = builder()
-  b.add('m', 'DEMO-MANIFOLD-4')
-  b.add('v1', 'DEMO-VALVE-VB')
-  b.add('v2', 'DEMO-VALVE-VB')
+  b.add('m', 'SUBBASE-MANIFOLD-4')
+  b.add('v1', 'SUBBASE-VALVE-VB')
+  b.add('v2', 'SUBBASE-VALVE-VB')
   b.mate('m', '站1', 'v1', '安裝面')
   b.mate('m', '站2', 'v2', '安裝面')
   b.add('fa', 'DEMO-FITTING-R18-D6')

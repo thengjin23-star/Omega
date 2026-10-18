@@ -112,6 +112,8 @@ describe('範例零件：點選每個預設埠所在的面，自動偵測結果�
         Array.from({ length: mesh.faceRanges.length / 2 }, (_, i) => ({ mesh, index: i, face: analyzeFace(mesh, i) })),
       )
       for (const port of part.ports) {
+        // 閥座安裝面是平面（原點由 P 口偏移算出），沒有對應的圓柱面
+        if (/系列閥座/.test(port.spec)) continue
         const label = `${part.modelCode} ${port.name}`
         // 找出埠所在的圓柱面：埠原點在軸線上且位於某一端
         const hit = faces.find(({ face }) => {
@@ -146,6 +148,6 @@ describe('範例零件：點選每個預設埠所在的面，自動偵測結果�
         checked++
       }
     }
-    expect(checked).toBe(sampleManifest().parts.reduce((n, p) => n + p.ports.length, 0))
+    expect(checked).toBe(sampleManifest().parts.reduce((n, p) => n + p.ports.filter((q) => !/系列閥座/.test(q.spec)).length, 0))
   }, 60_000)
 })

@@ -6,7 +6,17 @@ import { drawPolysides, makeBox, makeCylinder, type Shape3D } from 'replicad'
 import { defaultRodDiameter } from '../../engine/components/cylinderDouble'
 import type { Vec3 } from '../../geometry/vec3'
 import type { SamplePortDef } from '../samples'
-import { baseInterfaceKey, cylinderPortSize, nextSize, threadSpecText, type GenericSpec, type ThreadSize, type ThreadStd } from './genericParts'
+import {
+  MANIFOLD_PORT,
+  cylinderPortSize,
+  seriesInterfaceKey,
+  seriesOf,
+  threadSpecText,
+  type GenericSpec,
+  type ThreadSize,
+  type ThreadStd,
+  type ValveSeries,
+} from './genericParts'
 
 export interface BuiltPart {
   shapes: { shape: Shape3D; name: string; color: string }[]
@@ -23,18 +33,19 @@ const NPT_D: Partial<Record<ThreadSize, number>> = { '1/8': 10.29, '1/4': 13.72,
 const HEX_AF: Record<ThreadSize, number> = { M5: 8, M6: 10, '1/8': 14, '1/4': 17, '3/8': 21, '1/2': 26, '3/4': 32 }
 const STEM_L: Record<ThreadSize, number> = { M5: 4, M6: 5, '1/8': 7, '1/4': 9, '3/8': 10, '1/2': 13, '3/4': 15 }
 const HOLE_DEPTH: Record<ThreadSize, number> = { M5: 6, M6: 7, '1/8': 9, '1/4': 11, '3/8': 12, '1/2': 15, '3/4': 17 }
-/** 管接式電磁閥本體：長、寬、高 */
-const VALVE_DIM: Record<ThreadSize, [number, number, number]> = {
-  M5: [48, 18, 24],
-  M6: [48, 18, 24],
-  '1/8': [70, 22, 34],
-  '1/4': [90, 28, 42],
-  '3/8': [110, 34, 50],
-  '1/2': [130, 40, 60],
-  '3/4': [150, 48, 70],
+/** 電磁閥本體（不含線圈）：長、寬、高，依系列（約為亞德客 4V100～4V400 的大小） */
+const VALVE_BODY: Record<ValveSeries, { L: number; W: number; H: number }> = {
+  100: { L: 50, W: 18, H: 26 },
+  200: { L: 62, W: 22, H: 32 },
+  300: { L: 78, W: 28, H: 38 },
+  400: { L: 96, W: 36, H: 48 },
 }
-/** 集裝座站距 */
-const PITCH: Record<ThreadSize, number> = { M5: 16, M6: 16, '1/8': 20, '1/4': 26, '3/8': 32, '1/2': 40, '3/4': 48 }
+/** 接管口裝得下的最小系列 */
+const MIN_SERIES: Record<ThreadSize, ValveSeries> = { M5: 100, M6: 100, '1/8': 100, '1/4': 200, '3/8': 300, '1/2': 400, '3/4': 400 }
+/** 閥的實際系列：指定的系列太小、裝不下接管口時加大 */
+export const valveSeries = (thread: ThreadSize, series?: ValveSeries): ValveSeries => Math.max(series ?? seriesOf(thread), MIN_SERIES[thread]) as ValveSeries
+/** 閥底面安裝面的原點：避開 P 口（偏向閥的 -Y 側），集裝座的站位用同樣的偏移 */
+const mountOffset = (series: ValveSeries) => VALVE_BODY[series].W / 2 - 3
 /** 三點組合本體邊長 */
 const FRL_SIZE: Record<ThreadSize, number> = { M5: 26, M6: 26, '1/8': 30, '1/4': 40, '3/8': 50, '1/2': 60, '3/4': 70 }
 
@@ -58,13 +69,14 @@ const drill = (shape: Shape3D, d: number, depth: number, mouth: Vec3, axis: Vec3
   shape.cut(cyl(d, depth + 0.2, at(mouth, axis, 0.2), neg(axis)))
 const bossD = (size: ThreadSize, std: ThreadStd = 'PT') => (std === 'NPT' ? (NPT_D[size] ?? BOSS_D[size]) : BOSS_D[size])
 const r1 = (n: number) => Math.round(n * 1000) / 1000
-const port = (name: string, spec: string, shape: 'hole' | 'boss', origin: Vec3, axis: Vec3, role?: SamplePortDef['role']): SamplePortDef => ({
+const port = (name: string, spec: string, shape: 'hole' | 'boss', origin: Vec3, axis: Vec3, role?: SamplePortDef['role'], ref?: Vec3): SamplePortDef => ({
   name,
   spec,
   shape,
   origin: origin.map(r1) as Vec3,
   axis,
   ...(role && { role }),
+  ...(ref && { ref }),
 })
 
 /** 公牙（沿 -Z，根部在原點）＋中間的通氣孔 */
@@ -128,29 +140,30 @@ export function buildGeneric(spec: GenericSpec): BuiltPart {
       }
     }
     case 'speedController': {
+      // L 型速度控制接頭（例如亞德客 JSC）：下面外牙、側面快插、上面調整鈕
       const af = HEX_AF[spec.thread]
-      const hexH = af * 0.5
-      const bodyD = spec.tube + 6
-      const bodyH = Math.max(14, 2.2 * spec.tube + 6)
+      const hexH = Math.max(4, af * 0.45)
+      const bodyD = Math.max(spec.tube + 6, af * 0.85)
+      const bodyH = bodyD * 1.4
+      const armZ = hexH + bodyH * 0.42
       let shape = stem(spec.thread, spec.std).fuse(hexZ(af, hexH, 0)).fuse(cyl(bodyD, bodyH, [0, 0, hexH]))
+      const ports: SamplePortDef[] = [port('1', threadSpecText(spec.thread, 'male', spec.std), 'boss', [0, 0, 0], [0, 0, -1])]
+      const a = socketArm(shape, [0, 0, armZ], [1, 0, 0], bodyD / 2 + Math.max(10, 2.3 * spec.tube), spec.tube)
+      shape = a.shape.cut(cyl(Math.min(bossD(spec.thread, spec.std) * 0.45, spec.tube - 1.5), STEM_L[spec.thread] + armZ + 0.2, [0, 0, -STEM_L[spec.thread] - 0.2]))
+      ports.push(port('2', `Ø${spec.tube} 快插`, 'hole', a.end, [1, 0, 0]))
       const top = hexH + bodyH
-      const depth = Math.max(10, 2.2 * spec.tube)
-      shape = drill(shape, spec.tube, depth, [0, 0, top], [0, 0, 1])
-      shape = shape.cut(cyl(Math.min(bossD(spec.thread, spec.std) * 0.45, spec.tube - 1.5), STEM_L[spec.thread] + top - depth + 0.4, [0, 0, -STEM_L[spec.thread] - 0.2]))
-      const knob = cyl(6, 6, [0, bodyD / 2 - 1, hexH + bodyH * 0.45], [0, 1, 0])
+      const knob = hexZ(bodyD * 0.62, 3, top).fuse(drawPolysides(bodyD * 0.3, 12).sketchOnPlane('XY', top + 3).extrude(6) as Shape3D)
       return {
         shapes: [
           { shape, name: 'BODY', color: METAL },
+          { shape: a.sleeve, name: 'RELEASE-SLEEVE', color: BLUE },
           { shape: knob, name: 'KNOB', color: DARK },
         ],
-        ports: [
-          port('1', threadSpecText(spec.thread, 'male', spec.std), 'boss', [0, 0, 0], [0, 0, -1]),
-          port('2', `Ø${spec.tube} 快插`, 'hole', [0, 0, top], [0, 0, 1]),
-        ],
+        ports,
       }
     }
     case 'valve':
-      return spec.mount === 'base' ? baseValve(spec) : bodyValve(spec)
+      return valve(spec)
     case 'manifold':
       return manifold(spec)
     case 'cylinder':
@@ -228,97 +241,95 @@ function fitting(spec: Extract<GenericSpec, { kind: 'fitting' }>): BuiltPart {
   }
 }
 
-function bodyValve(spec: Extract<GenericSpec, { kind: 'valve' }>): BuiltPart {
-  const [L, W, H] = VALVE_DIM[spec.thread]
+/**
+ * 電磁閥（仿亞德客 4V／3V）：A、B 在上面；P、EA、EB（3 口閥為 P、R）在底面；線圈在 +X 端（雙電控兩端）。
+ * 底面同時是裝集裝座的安裝面：裝上時底面的埠由集裝座供氣、排氣（sealedBy）。
+ */
+function valve(spec: Extract<GenericSpec, { kind: 'valve' }>): BuiltPart {
+  const series = valveSeries(spec.thread, spec.series)
+  const { L, W, H } = VALVE_BODY[series]
   const main = spec.thread
   const ex = spec.exhaust ?? spec.thread
   let body = box([-L / 2, -W / 2, 0], [L / 2, W / 2, H])
   const ports: SamplePortDef[] = []
+  const thread = (size: ThreadSize) => threadSpecText(size, 'female', spec.std)
   const top = (name: string, x: number, size: ThreadSize) => {
-    body = drill(body, HOLE_D[size], HOLE_DEPTH[size] + 1, [x, 0, H], [0, 0, 1])
-    ports.push(port(name, threadSpecText(size, 'female', spec.std), 'hole', [x, 0, H], [0, 0, 1]))
+    body = drill(body, HOLE_D[size], HOLE_DEPTH[size], [x, 0, H], [0, 0, 1])
+    ports.push(port(name, thread(size), 'hole', [x, 0, H], [0, 0, 1]))
   }
-  const front = (name: string, x: number, size: ThreadSize) => {
-    body = drill(body, HOLE_D[size], HOLE_DEPTH[size] + 1, [x, -W / 2, H / 2], [0, -1, 0])
-    ports.push(port(name, threadSpecText(size, 'female', spec.std), 'hole', [x, -W / 2, H / 2], [0, -1, 0]))
+  const bottom = (name: string, x: number, size: ThreadSize) => {
+    body = drill(body, HOLE_D[size], HOLE_DEPTH[size], [x, 0, 0], [0, 0, -1])
+    ports.push({ ...port(name, thread(size), 'hole', [x, 0, 0], [0, 0, -1]), sealedBy: '安裝面' })
   }
   if (spec.fn === '32NC') {
     top('A', 0, main)
-    front('P', -0.18 * L, main)
-    front('R', 0.18 * L, ex)
+    bottom('P', -0.13 * L, main)
+    bottom('R', 0.13 * L, ex)
   } else {
-    top('A', -0.143 * L, main)
-    top('B', 0.143 * L, main)
-    front('EA', -0.257 * L, ex)
-    front('P', 0, main)
-    front('EB', 0.257 * L, ex)
+    top('A', -0.13 * L, main)
+    top('B', 0.13 * L, main)
+    bottom('EA', -0.26 * L, ex)
+    bottom('P', 0, main)
+    bottom('EB', 0.26 * L, ex)
   }
+  // 固定螺絲孔（裝集裝座用，貫穿）
+  for (const x of [-(L / 2 - 0.08 * L), L / 2 - 0.08 * L]) body = body.cut(cyl(3.4, H + 0.4, [x, 0, -0.2]))
+  ports.push(port('安裝面', `安裝面：${seriesInterfaceKey(series)}`, 'hole', [0, -mountOffset(series), 0], [0, 0, -1], 'plug', [1, 0, 0]))
+
   const shapes: BuiltPart['shapes'] = [{ shape: body, name: 'BODY', color: METAL }]
-  const sl = 0.38 * L
-  const solenoid = (sign: 1 | -1) => {
-    const x0 = sign > 0 ? L / 2 : -L / 2 - sl
-    const coil = box([x0, -W / 2 + 1, 0.08 * H], [x0 + sl, W / 2 - 1, 0.92 * H]).fuse(cyl(0.18 * H, 4, [x0 + sl / 2, 0, 0.92 * H]))
-    shapes.push({ shape: coil, name: sign > 0 ? 'SOLENOID' : 'SOLENOID-2', color: DARK })
+  const coilL = 0.55 * L
+  const coil = (sign: 1 | -1, name: string) => {
+    const x0 = sign > 0 ? L / 2 : -L / 2 - coilL
+    shapes.push({ shape: box([x0, -W / 2 + 0.3, 0.1 * H], [x0 + coilL, W / 2 - 0.3, 1.12 * H]), name, color: DARK })
+    // 接線盒（DIN 插頭）
+    const cx = x0 + coilL / 2
+    shapes.push({ shape: box([cx - 0.3 * W, -0.3 * W, 1.12 * H], [cx + 0.3 * W, 0.3 * W, 1.12 * H + 0.35 * H]), name: `${name}-CONNECTOR`, color: '#4b5563' })
   }
   if (spec.fn === '52Pilot') {
-    shapes.push({ shape: cyl(0.4 * H, 4, [L / 2, 0, H / 2], [1, 0, 0]), name: 'PILOT', color: DARK })
+    for (const sign of [1, -1] as const) shapes.push({ shape: cyl(0.45 * H, 6, [(sign * L) / 2, 0, H / 2], [sign, 0, 0]), name: sign > 0 ? 'PILOT-14' : 'PILOT-12', color: DARK })
   } else {
-    solenoid(1)
-    if (spec.fn !== '52Single' && spec.fn !== '32NC') solenoid(-1)
+    coil(1, 'SOLENOID')
+    if (spec.fn === '52Single' || spec.fn === '32NC') shapes.push({ shape: cyl(0.25 * W, 2, [-L / 2, 0, H * 0.55], [-1, 0, 0]), name: 'MANUAL', color: '#f59e0b' })
+    else coil(-1, 'SOLENOID-2')
   }
   return { shapes, ports }
 }
 
-/** 集裝座的寬、高 */
-const manifoldSize = (size: ThreadSize) => ({ W: Math.max(40, 4.6 * HOLE_D[size]), H: Math.max(20, 2.3 * HOLE_D[size]) })
-
-function baseValve(spec: Extract<GenericSpec, { kind: 'valve' }>): BuiltPart {
-  const pitch = PITCH[spec.thread]
-  const { W } = manifoldSize(spec.thread)
-  const half = pitch / 2 - 1
-  const Hv = Math.round(W * 0.75)
-  let body = box([-half, -(W / 2 - 1), 0], [half, W / 2 - 1, Hv])
-  body = drill(body, 5, 5, [0, 0, 0], [0, 0, -1])
-  body = drill(body, 3.5, 5, [0, -0.2 * W, 0], [0, 0, -1])
-  body = drill(body, 3.5, 5, [0, 0.2 * W, 0], [0, 0, -1])
-  const coil = box([-(half - 1), -(W / 2 - 3), Hv], [half - 1, -1, Hv + 18])
-  const shapes: BuiltPart['shapes'] = [
-    { shape: body, name: 'BODY', color: METAL },
-    { shape: coil, name: 'SOLENOID', color: DARK },
-  ]
-  if (spec.fn !== '52Single' && spec.fn !== '32NC' && spec.fn !== '52Pilot') shapes.push({ shape: box([-(half - 1), 1, Hv], [half - 1, W / 2 - 3, Hv + 18]), name: 'SOLENOID-2', color: DARK })
-  return { shapes, ports: [port('安裝面', `安裝面：${baseInterfaceKey(spec.thread, spec.std)}`, 'hole', [0, 0, 0], [0, 0, -1], 'plug')] }
-}
-
+/**
+ * 集裝座（仿亞德客 100M～400M）：上面一排站位（閥橫跨在上面），內部有供氣與兩條排氣通道，
+ * P、EA、EB 從端面接出；A、B 在閥上，集裝座的兩側沒有出氣口。
+ */
 function manifold(spec: Extract<GenericSpec, { kind: 'manifold' }>): BuiltPart {
-  const size = spec.thread
-  const supply = nextSize(size)
-  const pitch = PITCH[size]
-  const { W, H } = manifoldSize(size)
-  const margin = HOLE_DEPTH[supply] + 3
-  const length = spec.stations * pitch + 2 * margin
-  let base = box([0, -W / 2, 0], [length, W / 2, H])
+  const series = spec.series ?? seriesOf(spec.thread)
+  const { L, W } = VALVE_BODY[series]
+  const size = MANIFOLD_PORT[series]
+  const pitch = W + 2
+  const H = Math.max(22, 2.2 * HOLE_D[size])
+  const margin = HOLE_DEPTH[size] + 5
+  const length = margin + spec.stations * pitch + 6
+  const yEx = 0.26 * L
+  const lastX = margin + (spec.stations - 0.5) * pitch
+  let base = box([0, -L / 2, 0], [length, L / 2, H])
   const ports: SamplePortDef[] = []
-  const key = `安裝面：${baseInterfaceKey(size, spec.std)}`
+  const thread = threadSpecText(size, 'female', spec.std)
+  // 端面的 P、EA、EB，接到內部的通道
+  for (const [name, y] of [
+    ['EA', -yEx],
+    ['P', 0],
+    ['EB', yEx],
+  ] as const) {
+    base = drill(base, HOLE_D[size], HOLE_DEPTH[size], [0, y, H / 2], [-1, 0, 0])
+    base = base.cut(cyl(HOLE_D[size] * 0.7, lastX + 2, [0.5, y, H / 2], [1, 0, 0]))
+    ports.push(port(name, thread, 'hole', [0, y, H / 2], [-1, 0, 0]))
+  }
+  const key = `安裝面：${seriesInterfaceKey(series)}`
+  const slot = { w: Math.min(HOLE_D[size] * 0.6, pitch * 0.4), l: Math.min(HOLE_D[size] * 0.9, 0.2 * L) }
   for (let i = 0; i < spec.stations; i++) {
     const x = margin + pitch / 2 + i * pitch
-    base = drill(base, 5, 6, [x, 0, H], [0, 0, 1])
-    base = drill(base, 3.5, 5, [x, -0.2 * W, H], [0, 0, 1])
-    base = drill(base, 3.5, 5, [x, 0.2 * W, H], [0, 0, 1])
-    base = drill(base, HOLE_D[size], HOLE_DEPTH[size] + 1, [x, -W / 2, H / 2], [0, -1, 0])
-    base = drill(base, HOLE_D[size], HOLE_DEPTH[size] + 1, [x, W / 2, H / 2], [0, 1, 0])
-    ports.push(port(`站${i + 1}`, key, 'hole', [x, 0, H], [0, 0, 1], 'socket'))
-    ports.push(port(`A${i + 1}`, threadSpecText(size, 'female', spec.std), 'hole', [x, -W / 2, H / 2], [0, -1, 0]))
-    ports.push(port(`B${i + 1}`, threadSpecText(size, 'female', spec.std), 'hole', [x, W / 2, H / 2], [0, 1, 0]))
-  }
-  base = drill(base, HOLE_D[supply], HOLE_DEPTH[supply] + 1, [0, 0, H / 2], [-1, 0, 0])
-  ports.push(port('P', threadSpecText(supply, 'female', spec.std), 'hole', [0, 0, H / 2], [-1, 0, 0]))
-  for (const [name, y] of [
-    ['EA', -0.22 * W],
-    ['EB', 0.22 * W],
-  ] as const) {
-    base = drill(base, HOLE_D[size], HOLE_DEPTH[size] + 1, [length, y, H / 2], [1, 0, 0])
-    ports.push(port(name, threadSpecText(size, 'female', spec.std), 'hole', [length, y, H / 2], [1, 0, 0]))
+    // 每一站：通往三條通道的長孔開口（實物多為長圓孔）、兩個固定閥的螺絲孔
+    for (const y of [-yEx, 0, yEx]) base = base.cut(box([x - slot.w / 2, y - slot.l / 2, H / 2], [x + slot.w / 2, y + slot.l / 2, H + 0.2]))
+    for (const y of [-(L / 2 - 0.08 * L), L / 2 - 0.08 * L]) base = drill(base, 3.3, 8, [x, y, H], [0, 0, 1])
+    ports.push(port(`站${i + 1}`, key, 'hole', [x + mountOffset(series), 0, H], [0, 0, 1], 'socket', [0, 1, 0]))
   }
   return { shapes: [{ shape: base, name: 'MANIFOLD', color: '#9aa5b1' }], ports }
 }

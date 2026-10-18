@@ -79,14 +79,14 @@ describe('collectModuleDrawing', () => {
     expect(src.instances.map((i) => i.item)).toEqual([1, 2, 2, 3])
     expect(src.withoutModel).toEqual(['DEMO-CYL-16-50'])
     expect(src.geometry(src.instances[0].key)?.positions.length).toBe(72)
-    // 閥的 A、B 接了接頭 → 閥剩 EA、P、EB；接頭剩快插端 2 個；消音器 1 個；氣缸 A、B
+    // 閥的 A、B 接了接頭 → 閥剩 EA、P、EB（沒裝集裝座的安裝面不列）；接頭剩快插端 2 個；消音器 1 個；氣缸 A、B
     const ports = src.ports.map((p) => `${p.item}:${p.port}`)
     expect(ports).toEqual(['1:EA', '1:P', '1:EB', '2:2', '2:2', '3:1', '4:A', '4:B'])
     // 接頭的快插端在閥 A 埠的上方，軸向朝外
     const fittingPort = src.ports[3]
     expect(fittingPort.spec).toContain('Ø6')
     expect(fittingPort.axis[2]).toBeCloseTo(1, 6)
-    expect(fittingPort.origin[2]).toBeGreaterThan(34)
+    expect(fittingPort.origin[2]).toBeGreaterThan(26)
   })
 
   it('組成組立圖的輸入：側視圖依投影法、選項、標題欄', () => {
@@ -106,9 +106,9 @@ describe('collectModuleDrawing', () => {
     expect(input.views.front.hidden.length).toBe(0)
     expect(input.title).toMatchObject({ title: '測試模組', customer: '客戶甲', drawingNo: 'D-1', date: '2026-01-02', drawer: '王' })
     expect(input.ports).toHaveLength(8)
-    // 閥的 P 埠朝 −Y：在前視圖正對觀察者
-    const p = input.ports[1]
-    expect(p.views.front?.facing).toBeCloseTo(1, 6)
+    // 接頭的快插端朝上：在俯視圖正對觀察者
+    const p = input.ports[3]
+    expect(p.views.top?.facing).toBeCloseTo(1, 6)
     const drawing = layoutAssemblyDrawing(input)
     expect(drawing.sheets.length).toBeGreaterThan(0)
     expect(drawing.warnings).toEqual([])

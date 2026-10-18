@@ -29,7 +29,16 @@ describe('toGenericSpec：AI 的零件 → 通用零件（檢查與補值）', (
       std: 'PT',
       exhaust: '1/8',
     })
-    expect(toGenericSpec(part({ kind: 'valve', mount: 'base', thread: '1/8', exhaust: 'M5' }))!.spec).toEqual({ kind: 'valve', fn: '52Single', thread: '1/8', std: 'PT', mount: 'base' })
+    expect(toGenericSpec(part({ kind: 'valve', thread: '1/4', exhaust: '1/8', series: 300 }))!.spec).toEqual({
+      kind: 'valve',
+      fn: '52Single',
+      thread: '1/4',
+      std: 'PT',
+      exhaust: '1/8',
+      series: 300,
+    })
+    expect(toGenericSpec(part({ kind: 'valve', thread: '1/8', series: 250 }))!.spec).toEqual({ kind: 'valve', fn: '52Single', thread: '1/8', std: 'PT' })
+    expect(toGenericSpec(part({ kind: 'manifold', stations: 6, thread: '1/4' }))!.spec).toEqual({ kind: 'manifold', stations: 6, series: 200, std: 'PT' })
     expect(toGenericSpec(part({ kind: 'silencer', thread: '2/3' as never }))!.spec).toEqual({ kind: 'silencer', thread: '1/8', std: 'PT' })
     expect(toGenericSpec(part({ kind: 'other' }))).toBeUndefined()
   })
@@ -81,6 +90,22 @@ describe('planFromAi', () => {
     const digest = libraryDigest(Object.values(PRODUCTS))
     expect(digest).toContain('- DEMO-VALVE-52-01｜')
     expect(digest).toMatch(/DEMO-SILENCER-R18｜.*｜消音器｜埠：1 R1\/8/)
+  })
+})
+
+describe('閥島的系列', () => {
+  it('集裝座跟著裝在上面的閥（依接管口決定系列）', () => {
+    const rows = planFromAi(
+      {
+        notes: [],
+        parts: [
+          part({ ref: 'p1', label: '集裝座', kind: 'manifold', stations: 4, series: 100 }),
+          part({ ref: 'p2', label: '電磁閥 3/8', kind: 'valve', thread: '3/8', qty: 4, connectTo: 'p1' }),
+        ],
+      },
+      [],
+    )
+    expect(rows[0].spec).toMatchObject({ kind: 'manifold', series: 300 })
   })
 })
 

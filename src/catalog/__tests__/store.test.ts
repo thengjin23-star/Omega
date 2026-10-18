@@ -5,7 +5,7 @@ import { exportBackupArchive, exportLibraryArchive, exportModuleArchive, importA
 import { CatalogStore } from '../db'
 import { attachCadFile, createModelOnlyProduct, guessModelCode, importCadFile } from '../importer'
 import { installSamples } from '../samples'
-import { nodeParser, readSample, sampleManifest, uniqueDbName } from './nodeHelpers'
+import { nodeParser, readFixture, readSample, sampleManifest, uniqueDbName } from './nodeHelpers'
 
 const open = () => CatalogStore.open(uniqueDbName())
 
@@ -58,10 +58,10 @@ describe('匯入 CAD 檔（以 SHA-256 認出同一個檔案）', () => {
 })
 
 describe('範例零件庫', () => {
-  it('安裝 13 個範例，每個埠的規格都能解析', async () => {
+  it('安裝 12 個範例，每個埠的規格都能解析', async () => {
     const store = await withSamples()
     const products = await store.listProducts()
-    expect(products).toHaveLength(13)
+    expect(products).toHaveLength(12)
     const valve = await byModel(store, 'DEMO-VALVE-52-01')
     expect(valve.ports.map((p) => `${p.name}:${formatSpec(p.spec!)}`)).toEqual([
       'A:Rc1/8 母（PT）',
@@ -69,7 +69,11 @@ describe('範例零件庫', () => {
       'EA:Rc1/8 母（PT）',
       'P:Rc1/8 母（PT）',
       'EB:Rc1/8 母（PT）',
+      '安裝面:安裝面「100 系列閥座」（元件側）',
     ])
+    // 底面的 P／EA／EB 由安裝面封住（裝在集裝座上時由集裝座供氣、排氣）
+    const mount = valve.ports.find((p) => p.name === '安裝面')!
+    expect(valve.ports.filter((p) => p.sealedBy === mount.id).map((p) => p.name)).toEqual(['EA', 'P', 'EB'])
     const manifold = await byModel(store, 'DEMO-MANIFOLD-4')
     expect(manifold.ports.find((p) => p.name === '站1')?.spec).toMatchObject({ kind: 'interface', role: 'socket' })
     expect(manifold.ports.find((p) => p.name === '站1')?.rotation).toBe('fixed')
@@ -91,8 +95,17 @@ describe('範例零件庫', () => {
     const edited = { ...silencer, ports: [{ ...silencer.ports[0], name: '我改過的名稱' }] }
     await store.putProduct(edited)
     const r = await installSamples(store, sampleManifest(), readSample, nodeParser)
-    expect(r).toEqual({ added: 0, existing: 13 })
+    expect(r).toEqual({ added: 0, existing: 12 })
     expect((await store.getProduct(silencer.id))?.ports[0].name).toBe('我改過的名稱')
+  })
+  it('範例改版時，舊版保留（模組可能用到）並在型號加註「舊版」', async () => {
+    const store = await open()
+    // 舊版的範例電磁閥：同一個檔名、不同的內容
+    const old = await importCadFile(store, 'DEMO-VALVE-52-01.step', await readFixture('SUBBASE-MANIFOLD-4.step'), nodeParser)
+    await store.putProduct({ ...old.product, modelCode: 'DEMO-VALVE-52-01', source: { ...old.product.source, fileName: 'DEMO-VALVE-52-01.step' } })
+    await installSamples(store, sampleManifest(), readSample, nodeParser)
+    expect((await store.getProduct(old.product.id))?.modelCode).toBe('DEMO-VALVE-52-01（舊版）')
+    expect((await store.listProducts()).filter((p) => p.modelCode === 'DEMO-VALVE-52-01')).toHaveLength(1)
   })
 })
 
@@ -102,7 +115,7 @@ describe('產品庫與模組的匯出／匯入', () => {
     const archive = await exportLibraryArchive(a)
     const b = await open()
     const report = await importArchive(b, archive)
-    expect(report).toMatchObject({ kind: 'library', productsAdded: 13, productsMerged: 0, conflicts: [] })
+    expect(report).toMatchObject({ kind: 'library', productsAdded: 12, productsMerged: 0, conflicts: [] })
     const [pa, pb] = [await a.listProducts(), await b.listProducts()]
     const sort = (list: typeof pa) => [...list].sort((x, y) => x.id.localeCompare(y.id))
     expect(sort(pb)).toEqual(sort(pa))
@@ -117,8 +130,8 @@ describe('產品庫與模組的匯出／匯入', () => {
     const b = await open()
     await importArchive(b, archive)
     const again = await importArchive(b, archive)
-    expect(again).toMatchObject({ productsAdded: 0, productsMerged: 13, portsAdded: 0, conflicts: [] })
-    expect(await b.listProducts()).toHaveLength(13)
+    expect(again).toMatchObject({ productsAdded: 0, productsMerged: 12, portsAdded: 0, conflicts: [] })
+    expect(await b.listProducts()).toHaveLength(12)
   })
 
   it('本機與匯入檔規格不同時保留本機並列出差異；本機未設定的規格會補上', async () => {
@@ -246,7 +259,7 @@ describe('完整備份（.pbak）', () => {
     const backup = await exportBackupArchive(a)
     const b = await open()
     const report = await importArchive(b, backup)
-    expect(report).toMatchObject({ kind: 'backup', productsAdded: 13, modulesRestored: 1, circuitsRestored: 1 })
+    expect(report).toMatchObject({ kind: 'backup', productsAdded: 12, modulesRestored: 1, circuitsRestored: 1 })
     expect((await b.getModule('m1'))?.updatedAt).toBe(5)
     expect((await b.getCircuit('c1'))?.nodes).toHaveLength(1)
     expect((await b.listStats()).find((s) => s.key === statKey)?.count).toBe(2)

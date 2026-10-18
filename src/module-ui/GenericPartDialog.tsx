@@ -5,6 +5,10 @@ import {
   THREAD_SIZES,
   TUBE_SIZES,
   VALVE_FUNCTION_LABEL,
+  VALVE_SERIES,
+  MANIFOLD_PORT,
+  seriesOf,
+  type ValveSeries,
   genericMeta,
   type FrlUnit,
   type GenericSpec,
@@ -30,7 +34,6 @@ type Kind =
   | 'bushing'
   | 'speedController'
   | 'valve'
-  | 'valve-base'
   | 'manifold'
   | 'cylinder'
   | 'frl'
@@ -47,15 +50,14 @@ const KINDS: { value: Kind; label: string }[] = [
   { value: 'plug', label: '塞頭' },
   { value: 'bushing', label: '轉接頭（外牙 × 內牙）' },
   { value: 'speedController', label: '速度控制接頭' },
-  { value: 'valve', label: '電磁閥（管接式）' },
-  { value: 'valve-base', label: '電磁閥（底板式，裝在集裝座上）' },
-  { value: 'manifold', label: '集裝座' },
+  { value: 'valve', label: '電磁閥（A／B 在上、P／排氣在底面，可裝集裝座）' },
+  { value: 'manifold', label: '集裝座（P／排氣在端面）' },
   { value: 'cylinder', label: '氣缸' },
   { value: 'frl', label: '三點組合／過濾器／調壓閥' },
   { value: 'gauge', label: '壓力錶' },
 ]
 
-const usesThread = (k: Kind) => !k.startsWith('union') && k !== 'cylinder'
+const usesThread = (k: Kind) => !k.startsWith('union') && k !== 'cylinder' && k !== 'manifold'
 const usesTube = (k: Kind) => k.startsWith('fitting') || k.startsWith('union') || k === 'speedController'
 
 /**
@@ -72,6 +74,7 @@ export function GenericPartDialog({ onClose }: { onClose: () => void }) {
   const [fn, setFn] = useState<ValveFunction>('52Single')
   const [exhaust, setExhaust] = useState<ThreadSize | ''>('')
   const [stations, setStations] = useState(4)
+  const [series, setSeries] = useState<ValveSeries | 0>(0)
   const [bore, setBore] = useState(32)
   const [stroke, setStroke] = useState(100)
   const [single, setSingle] = useState(false)
@@ -99,11 +102,9 @@ export function GenericPartDialog({ onClose }: { onClose: () => void }) {
       case 'speedController':
         return { kind: 'speedController', thread, tube, std }
       case 'valve':
-        return { kind: 'valve', fn, thread, std, ...(exhaust && exhaust !== thread && { exhaust }) }
-      case 'valve-base':
-        return { kind: 'valve', fn, thread, std, mount: 'base' }
+        return { kind: 'valve', fn, thread, std, ...(exhaust && exhaust !== thread && { exhaust }), ...(series && { series }) }
       case 'manifold':
-        return { kind: 'manifold', stations, thread, std }
+        return { kind: 'manifold', stations, series: series || 200, std }
       case 'cylinder':
         return { kind: 'cylinder', bore, stroke, single }
       case 'frl':
@@ -162,7 +163,7 @@ export function GenericPartDialog({ onClose }: { onClose: () => void }) {
         <div className="grid grid-cols-2 gap-2">
           {usesThread(kind) && (
             <label className="block text-xs text-slate-500">
-              {kind === 'bushing' ? '外牙' : kind === 'manifold' ? 'A／B 埠' : kind === 'valve' || kind === 'valve-base' || kind === 'frl' ? '接管口徑' : '螺紋'}
+              {kind === 'bushing' ? '外牙' : kind === 'valve' || kind === 'frl' ? '接管口徑' : '螺紋'}
               <select value={thread} onChange={(e) => setThread(e.target.value as ThreadSize)} className={selectClass} aria-label="螺紋">
                 {sizes()}
               </select>
@@ -198,7 +199,25 @@ export function GenericPartDialog({ onClose }: { onClose: () => void }) {
               </select>
             </label>
           )}
-          {(kind === 'valve' || kind === 'valve-base') && (
+          {(kind === 'valve' || kind === 'manifold') && (
+            <label className="block text-xs text-slate-500">
+              大小系列（閥與集裝座要相同）
+              <select
+                value={kind === 'manifold' ? series || 200 : series}
+                onChange={(e) => setSeries(Number(e.target.value) as ValveSeries | 0)}
+                className={selectClass}
+                aria-label="系列"
+              >
+                {kind === 'valve' && <option value={0}>依接管口（{seriesOf(thread)} 系列）</option>}
+                {VALVE_SERIES.map((v) => (
+                  <option key={v} value={v}>
+                    {v} 系列（亞德客 4V{v} 大小{kind === 'manifold' ? `，P／排氣 PT${MANIFOLD_PORT[v]}` : ''}）
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {kind === 'valve' && (
             <label className="block text-xs text-slate-500">
               功能
               <select value={fn} onChange={(e) => setFn(e.target.value as ValveFunction)} className={selectClass} aria-label="閥的功能">
