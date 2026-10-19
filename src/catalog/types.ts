@@ -34,8 +34,11 @@ export interface ProductPort {
    * 這個埠由集裝座供氣／排氣，不必另外接管；沒有裝在集裝座上時，可以直接接接頭或消音器。
    */
   sealedBy?: string
-  /** 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（使用者還沒確認） */
-  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean }
+  /**
+   * 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（推測，使用者還沒確認）；
+   * basis = 怎麼判斷的（例如「孔 Ø8.6 → Rc1/8；名稱依位置推測」）
+   */
+  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean; basis?: string }
 }
 
 export type ProductCategory =

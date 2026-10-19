@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { computeTransforms } from '../assembly/moduleOps'
+import { computeTransforms, mateGuides } from '../assembly/moduleOps'
 import { tubeLabelOf } from '../assembly/tubes'
 import type { IllustrationInfo, IllustrationView } from '../assembly/types'
 import { Button, Dialog } from '../components/ui'
@@ -80,6 +80,7 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
   const edges = info.edges ?? true
   const labelMode = info.label ?? 'code'
   const footer = info.footer ?? true
+  const explode = info.explode ?? 0
 
   // 打開時記下 3D 畫面的視角（之後在 3D 畫面轉動不影響這次的示意圖）
   const [live] = useState(() => viewportDirection())
@@ -104,11 +105,11 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
 
   // 零件（只在零件、鎖合、位置、PU 管改變時重建）
   const { instances, mates, placements, tubes } = doc
-  const items = useMemo(() => {
+  const { items, guides } = useMemo(() => {
     const geometryDoc = { ...useModuleStore.getState().doc, instances, mates, placements, tubes }
-    const { transforms } = computeTransforms(geometryDoc, products)
-    return illustrationItems(geometryDoc, products, meshes, transforms).items
-  }, [instances, mates, placements, tubes, products, meshes])
+    const { transforms } = computeTransforms(geometryDoc, products, { explode })
+    return { items: illustrationItems(geometryDoc, products, meshes, transforms).items, guides: explode ? mateGuides(geometryDoc, products, transforms) : [] }
+  }, [instances, mates, placements, tubes, products, meshes, explode])
   useEffect(() => () => items.forEach((i) => i.tube && i.geometries.forEach((g) => g.dispose())), [items])
 
   // ---- 著色圖（WebGL） ----
@@ -122,7 +123,7 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
     // 先讓畫面顯示「產生中」再算（大模組要幾百毫秒）
     const timer = setTimeout(() => {
       try {
-        const result = renderIllustration(items, { ...dir, color, edges, maxW: MAX_W, maxH: MAX_H, scale: RENDER_SCALE })
+        const result = renderIllustration(items, { ...dir, color, edges, guides, maxW: MAX_W, maxH: MAX_H, scale: RENDER_SCALE })
         setRendered(result ? { result, items } : undefined)
         setError(result ? undefined : items.length ? '無法產生示意圖' : '模組中的零件都沒有 3D 模型，無法畫出示意圖')
       } catch (err) {
@@ -132,7 +133,7 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
       }
     }, 30)
     return () => clearTimeout(timer)
-  }, [meshesReady, items, dirKey, color, edges])
+  }, [meshesReady, items, guides, dirKey, color, edges])
 
   // ---- 標註群組：同一產品一個（PU 管依管徑） ----
   const hidden = useMemo(() => new Set(info.hidden ?? []), [info.hidden])
@@ -424,6 +425,15 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
               <select value={color} onChange={(e) => set({ color: e.target.value as 'model' | 'gray' })} className={selectClass}>
                 <option value="model">依 3D 檔的顏色</option>
                 <option value="gray">統一灰色（型錄風格）</option>
+              </select>
+            </label>
+            <label className="block text-xs text-slate-500">
+              組裝方式
+              <select value={explode} onChange={(e) => set({ explode: Number(e.target.value), positions: undefined })} className={selectClass}>
+                <option value={0}>組好的樣子</option>
+                <option value={15}>爆炸圖：拉開 15 mm</option>
+                <option value={30}>爆炸圖：拉開 30 mm</option>
+                <option value={60}>爆炸圖：拉開 60 mm</option>
               </select>
             </label>
             <label className="block text-xs text-slate-500">

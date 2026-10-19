@@ -39,7 +39,7 @@ import type { CatalogStore } from '../catalog/db'
 import { analyzeFace, proposePort, type OpenTester, type PortProposal } from '../catalog/faceAnalysis'
 import { attachCadFile, createModelOnlyProduct, importCadFile } from '../catalog/importer'
 import { getCatalog, useLibraryStore } from '../catalog/library'
-import { autoPorts, toProductPort, type DetectedPort } from '../catalog/autoPorts'
+import { autoPorts, toProductPort, type DetectedPort, type PortCandidate } from '../catalog/autoPorts'
 import { decodeModelCode } from '../catalog/makerCodes'
 import { buildGenericInWorker } from '../catalog/generic/genericClient'
 import { genericFromCode, genericKey, genericMeta, type GenericSpec } from '../catalog/generic/genericParts'
@@ -132,6 +132,8 @@ interface ModuleSummary {
 interface State {
   /** 自動找埠時不確定的孔（產品 id → 候選）：屬性面板列出來讓使用者加入 */
   maybePorts: Record<string, DetectedPort[]>
+  /** 自動找埠時找到的小孔（固定孔、定位孔）：只在畫面上標出，不當成埠 */
+  fixingHoles: Record<string, PortCandidate[]>
   status: 'loading' | 'ready' | 'error'
   error?: string
   products: Record<string, Product>
@@ -205,6 +207,9 @@ interface State {
   attachMany(list: { at: PortRef; productId: string; portId: string }[]): Promise<void>
   /** 更換零件的產品，盡量保留原本的鎖合 */
   replaceInstanceProduct(instanceId: string, productId: string): Promise<void>
+  /** 接合建議：滑鼠移到建議上時，3D 畫面標出對方的埠 */
+  hintPort?: PortRef
+  setHintPort(ref: PortRef | undefined): void
   /** 3D 畫面上的操作把手：拖曳移動或旋轉選取的零件 */
   gizmo?: 'move' | 'rotate'
   /** 拖曳操作把手時，開始拖曳前的模組（結束時記一步復原） */
@@ -651,7 +656,10 @@ export const useModuleStore = create<State>()((set, get) => {
       return `已加入「${next.modelCode}」，但模型上沒有找到埠（可能沒有畫出孔）。${maybe}請按「新增埠」點選位置，或在產品庫用「產生通用 3D」。`
     const ports = r.added.filter((p) => p.spec?.kind !== 'interface')
     const mounts = r.added.filter((p) => p.spec?.kind === 'interface')
-    const mount = mounts.length ? `另依型號加上「${mounts.map((p) => formatSpecShort(p.spec!)).join('、')}」安裝面，可以直接裝到集裝座。` : ''
+    const guessed = mounts.some((p) => /推測/.test(p.detected?.basis ?? ''))
+    const mount = mounts.length
+      ? `另${guessed ? '依底面的 P／排氣口推測' : '依型號'}加上「${mounts.map((p) => formatSpecShort(p.spec!)).join('、')}」安裝面，可以直接裝到集裝座${guessed ? '（系列是推測的，請確認）' : ''}。`
+      : ''
     return `已加入「${next.modelCode}」${next.name ? `（${next.name}）` : ''}：自動找到 ${ports.length} 個埠 — ${describePorts(ports)}。${mount}請在右側確認，名稱或規格不對可以直接改。${maybe}`
   }
 
@@ -856,6 +864,7 @@ export const useModuleStore = create<State>()((set, get) => {
     seq: SEQUENCER_IDLE,
     sequenceOpen: false,
     maybePorts: {},
+    fixingHoles: {},
 
     init() {
       initPromise ??= initialize()
@@ -904,15 +913,15 @@ export const useModuleStore = create<State>()((set, get) => {
           await addInstanceOf(get().products[product.id])
           void generateThumbs([get().products[product.id]])
           set({ busy: undefined })
+          // 看起來是組立檔（本程式舊版匯出的「項次_型號」）：訊息直接提供「拆開」；
+          // 其他多實體的檔案（一般零件常見：本體、線圈…）不打擾，需要時在右側按「依 STEP 結構拆開」
           const mesh = get().meshes[product.source.sha256]
-          const action = splitOffer(product, mesh, get().selected ?? '')
           const looksAssembly = (mesh?.groups ?? []).length >= 2 && mesh!.groups!.every((g) => /^\d+_/.test(g.name))
+          const action = looksAssembly ? splitOffer(product, mesh, get().selected ?? '') : undefined
           set({
             message: {
               kind: 'info',
-              text: action
-                ? `${text} 這個檔案有 ${mesh!.groups!.length} 個頂層零件${looksAssembly ? '，看起來是組立檔（例如舊版匯出的模組）' : '（一般零件也可能由好幾個實體組成）'}：要分開操作時按「${action.label}」。`
-                : text,
+              text: action ? `${text} 這個檔案有 ${mesh!.groups!.length} 個頂層零件，看起來是組立檔（例如舊版匯出的模組）：要分開操作時按「${action.label}」。` : text,
               ...(action && { action }),
             },
           })
@@ -1169,6 +1178,10 @@ export const useModuleStore = create<State>()((set, get) => {
       set({ gizmo })
     },
 
+    setHintPort(hintPort) {
+      set({ hintPort })
+    },
+
     rotateSelected(axis, deg) {
       const { selected, doc, products } = get()
       const center = selected && worldCenterOf(selected)
@@ -1396,7 +1409,7 @@ export const useModuleStore = create<State>()((set, get) => {
           updatedAt: Date.now(),
         }
         if (r.ports.length || next.category !== product.category || next.name !== product.name || next.maker !== product.maker) await persistProduct(next)
-        set((s) => ({ maybePorts: { ...s.maybePorts, [productId]: r.maybe } }))
+        set((s) => ({ maybePorts: { ...s.maybePorts, [productId]: r.maybe }, fixingHoles: { ...s.fixingHoles, [productId]: r.fixing } }))
         return { added: r.ports, maybe: r.maybe }
       } catch (err) {
         fail(err)
@@ -1534,7 +1547,7 @@ export const useModuleStore = create<State>()((set, get) => {
     },
 
     select(instance) {
-      set({ selected: instance, selectedTube: undefined })
+      set({ selected: instance, selectedTube: undefined, hintPort: undefined })
     },
 
     setMode(mode) {

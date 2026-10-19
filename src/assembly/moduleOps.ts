@@ -97,8 +97,12 @@ export interface TransformResult {
   broken: string[]
 }
 
-/** 由根零件的位置與鎖合關係推導每個零件的世界矩陣 */
-export function computeTransforms(doc: ModuleDoc, products: ProductMap): TransformResult {
+/**
+ * 由根零件的位置與鎖合關係推導每個零件的世界矩陣。
+ * explode（mm）：爆炸圖，每個鎖合的子零件沿父零件埠的方向往外拉開這個距離（示意圖用，不影響模組）。
+ */
+export function computeTransforms(doc: ModuleDoc, products: ProductMap, options: { explode?: number } = {}): TransformResult {
+  const explode = options.explode ?? 0
   const transforms: Record<string, Mat4> = {}
   const broken: string[] = []
   const children = new Map<string, Mate[]>()
@@ -117,7 +121,7 @@ export function computeTransforms(doc: ModuleDoc, products: ProductMap): Transfo
         visit(m.child.instance, world.clone())
         continue
       }
-      visit(m.child.instance, mateTransform(world, pp.frame, cp.frame, m.angle))
+      visit(m.child.instance, mateTransform(world, pp.frame, cp.frame, m.angle, explode))
     }
   }
   for (const inst of doc.instances) {
@@ -126,6 +130,18 @@ export function computeTransforms(doc: ModuleDoc, products: ProductMap): Transfo
   // 保險：若資料不一致（例如出現迴圈），仍給每個零件一個位置
   for (const inst of doc.instances) transforms[inst.id] ??= fromMatrix(toMatrix(doc.placements[inst.id]))
   return { transforms, broken }
+}
+
+/** 爆炸圖的裝配線：每個鎖合從父零件的埠口連到子零件的埠口（模組座標） */
+export function mateGuides(doc: ModuleDoc, products: ProductMap, transforms: Readonly<Record<string, Mat4>>): [Vec3, Vec3][] {
+  return doc.mates.flatMap((m) => {
+    const pp = getPort(doc, products, m.parent)
+    const cp = getPort(doc, products, m.child)
+    const pw = transforms[m.parent.instance]
+    const cw = transforms[m.child.instance]
+    if (!pp || !cp || !pw || !cw) return []
+    return [[worldFrame(pw, pp.frame).origin, worldFrame(cw, cp.frame).origin] as [Vec3, Vec3]]
+  })
 }
 
 export function addInstance(doc: ModuleDoc, productId: string, placement?: Mat4): { doc: ModuleDoc; instanceId: string } {

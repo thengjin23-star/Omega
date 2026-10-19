@@ -5,6 +5,7 @@ import { portLabel } from './labels'
 import { LibraryPanel } from './LibraryPanel'
 import { MateDialog } from './MateDialog'
 import { ModuleToolbar } from './ModuleToolbar'
+import { PORT_ROLE_COLOR, PORT_ROLE_LABEL, portRole } from '../catalog/portRoles'
 import { useModuleStore } from './moduleStore'
 import { PortEditor } from './PortEditor'
 import { Button } from '../components/ui'
@@ -70,6 +71,7 @@ export default function ModuleWorkspace() {
             <HintBar />
             <SimulationPanel />
             <DimensionsBadge />
+            <PortLegend />
             <EmptyState />
             <Toast />
             {dragging && (
@@ -206,6 +208,38 @@ function EmptyState() {
           </Button>
         )}
       </div>
+    </div>
+  )
+}
+
+/** 選取零件時：埠的顏色代表的用途（只列這個零件有的） */
+function PortLegend() {
+  const product = useModuleStore((s) => {
+    const inst = s.doc.instances.find((i) => i.id === s.selected)
+    return inst ? s.products[inst.productId] : undefined
+  })
+  const mode = useModuleStore((s) => s.mode)
+  if (!product || !product.ports.length || (mode !== 'select' && mode !== 'define-port')) return null
+  const roles = [...new Set(product.ports.map((p) => portRole(p)))]
+  const guessed = product.ports.some((p) => p.detected?.auto)
+  return (
+    <div className="pointer-events-none absolute top-14 right-3 z-10 hidden max-w-[16rem] flex-wrap gap-x-2 gap-y-1 rounded-md bg-white/90 px-2 py-1 text-[11px] text-slate-600 shadow-sm sm:flex" aria-label="埠的顏色">
+      {roles.map((r) => (
+        <span key={r} className="flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: PORT_ROLE_COLOR[r] }} />
+          {PORT_ROLE_LABEL[r]}
+        </span>
+      ))}
+      <span className="flex items-center gap-1">
+        <span className="inline-block h-2 w-2 rounded-full bg-green-600" />
+        已接
+      </span>
+      {guessed && (
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2.5 w-4 rounded-full border border-dashed border-slate-500" />
+          推測，待確認
+        </span>
+      )}
     </div>
   )
 }

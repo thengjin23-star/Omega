@@ -2,11 +2,13 @@ import { useMemo, useState } from 'react'
 import { bomColumns, bomTotal, buildBom } from '../assembly/bom'
 import { formatMoney } from '../utils/money'
 import { suggestPartners } from '../assembly/memory'
+import { mateHints } from '../assembly/mateHints'
 import { attachmentBranches } from '../assembly/copyAttachments'
 import { estimateTubeLengthOf, getPort, groupOf, mateChecks, mateRotation, parentMateOf, rootPose, usedPorts } from '../assembly/moduleOps'
 import { useLibraryStore } from '../catalog/library'
 import { effectivePneumatic, isCircuitType, pneumaticTypeLabel } from '../catalog/pneumatic'
 import { CATEGORY_LABEL, hasModel, productLabel, type Product, type ProductCategory } from '../catalog/types'
+import { PORT_ROLE_COLOR, PORT_ROLE_LABEL, portRole } from '../catalog/portRoles'
 import { PneumaticFunctionDialog } from '../components/PneumaticFunctionEditor'
 import { SymbolPreview } from '../components/SymbolPreview'
 import { formatSpec, type MateLevel } from '../threads'
@@ -188,6 +190,7 @@ function PartTab() {
           ))}
         </ul>
       </section>
+      <MateHintsSection instanceId={inst.id} />
       <PartActions instanceId={inst.id} product={product} />
       <Button variant="danger" size="sm" onClick={removeSelected}>
         從模組移除這個零件
@@ -343,6 +346,50 @@ function PoseSection({ instanceId }: { instanceId: string }) {
         </Button>
         {group > 1 && <span className="text-xs text-slate-500">接在它上面的 {group - 1} 個零件一起動（鎖合不變）</span>}
       </div>
+    </section>
+  )
+}
+
+/** 接合建議：這個零件的空埠可以接到模組中哪些零件（安裝面優先）；滑鼠移上去時 3D 畫面標出對方的埠 */
+function MateHintsSection({ instanceId }: { instanceId: string }) {
+  const doc = useModuleStore((s) => s.doc)
+  const products = useModuleStore((s) => s.products)
+  const mode = useModuleStore((s) => s.mode)
+  const { clickPort, setHintPort } = useModuleStore.getState()
+  const hints = useMemo(() => mateHints(doc, products, instanceId), [doc, products, instanceId])
+  if (!hints.length || mode !== 'select') return null
+  return (
+    <section className="space-y-1.5 rounded-md border border-slate-200 p-2" aria-label="可以接到">
+      <h3 className="text-sm font-semibold text-slate-700">可以接到</h3>
+      <ul className="space-y-1" onMouseLeave={() => setHintPort(undefined)}>
+        {hints.map((h) => {
+          const fromName = getPort(doc, products, h.from)?.name
+          return (
+            <li
+              key={`${h.from.port}>${h.to.instance}:${h.to.port}`}
+              className="flex items-center justify-between gap-2 text-xs"
+              onMouseEnter={() => setHintPort(h.to)}
+              data-hint={`${fromName}>${portLabel(doc, products, h.to)}`}
+            >
+              <span className="min-w-0 truncate text-slate-600">
+                <strong className="text-slate-800">{fromName}</strong>
+                {h.mount ? '（安裝面）' : ''} → {portLabel(doc, products, h.to)}
+              </span>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setHintPort(undefined)
+                  clickPort(h.from)
+                  clickPort(h.to)
+                }}
+                title="開啟連接檢查，確認後鎖合"
+              >
+                接上
+              </Button>
+            </li>
+          )
+        })}
+      </ul>
     </section>
   )
 }
@@ -747,10 +794,19 @@ function PortRow({ instanceId, product, portId }: { instanceId: string; product:
     <li className={`rounded-md border p-2 ${isFrom ? 'border-blue-400 bg-blue-50' : 'border-slate-200'}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ background: PORT_ROLE_COLOR[portRole(port)] }}
+            title={PORT_ROLE_LABEL[portRole(port)]}
+          />
           <span className="font-mono text-sm font-semibold text-slate-800">{port.name}</span>
           {port.detected?.auto && (
-            <span className="rounded bg-violet-100 px-1 text-[10px] text-violet-700" title="匯入時由孔徑自動判斷；確認無誤後按「全部確認」，或按「編輯」修改">
-              自動
+            <span
+              className="rounded bg-violet-100 px-1 text-[10px] text-violet-700"
+              title={`${port.detected.basis ?? '匯入時自動判斷'}。確認無誤後按「全部確認」，或按「編輯」修改`}
+              data-basis={port.detected.basis}
+            >
+              推測
             </span>
           )}
         </span>
@@ -832,7 +888,13 @@ function AutoPortsNotice({ product }: { product: Product }) {
         <div className="flex items-start justify-between gap-2">
           <span>
             {auto} 個埠是由孔徑<strong>自動判斷</strong>的：請看一下名稱與規格（PT／G 等牙型以型號為準），不對的按「編輯」修改。
-            {mount?.spec?.kind === 'interface' && <> 底面另加上「{mount.spec.key}」安裝面，P／排氣由集裝座供應。</>}
+            {mount?.spec?.kind === 'interface' && (
+              <>
+                {' '}
+                底面另加上「{mount.spec.key}」安裝面，P／排氣由集裝座供應
+                {/推測/.test(mount.detected?.basis ?? '') ? <strong>（系列是依接管口推測的，請確認）</strong> : ''}。
+              </>
+            )}
           </span>
           <Button size="sm" className="shrink-0 whitespace-nowrap" onClick={() => void confirmAutoPorts(product.id)}>
             全部確認

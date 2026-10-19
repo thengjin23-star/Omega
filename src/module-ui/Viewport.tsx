@@ -12,6 +12,7 @@ import { faceGeometry, geometriesFor } from './geometryCache'
 import { useModuleStore, useTransforms } from './moduleStore'
 import { DimensionLines, MeasureOverlay } from './Measure'
 import { PortMarker } from './PortMarker'
+import { HoleMarker } from './HoleMarker'
 import { gizmoRecentlyUsed } from './gizmoClock'
 import { PoseGizmo } from './PoseGizmo'
 import { TubeView } from './TubeView'
@@ -58,6 +59,9 @@ function InstanceView({ instance, product, mesh, matrix }: { instance: ModuleIns
   const connecting = useModuleStore((s) => !!s.connectFrom)
   const defining = useModuleStore((s) => s.mode === 'define-port')
   const simulating = useModuleStore((s) => s.mode === 'simulate')
+  // 不確定是不是埠的孔（固定孔、定位孔）：還沒加入為埠的
+  const maybeHoles = useModuleStore((s) => s.maybePorts[product.id])?.filter((m) => !product.ports.some((p) => Math.hypot(...m.candidate.origin.map((v, i) => v - p.frame.origin[i])) < 1))
+  const fixingHoles = useModuleStore((s) => s.fixingHoles[product.id])
   const nodeType = useModuleStore((s) => s.sim?.mc.circuit.nodes.find((n) => n.id === instance.id)?.type)
   const interaction = simulating ? interactionOf(nodeType) : undefined
   const valveActive = useSimValveActive(instance.id)
@@ -177,6 +181,8 @@ function InstanceView({ instance, product, mesh, matrix }: { instance: ModuleIns
       {product.ports.map((p) => (
         <PortMarker key={p.id} instanceId={instance.id} port={p} showLabel={selected} />
       ))}
+      {selected && !simulating && maybeHoles?.map((h, i) => <HoleMarker key={`m${i}`} productId={product.id} candidate={h.candidate} hole={h} />)}
+      {selected && !simulating && fixingHoles?.map((c, i) => <HoleMarker key={`f${i}`} productId={product.id} candidate={c} />)}
     </group>
   )
 }

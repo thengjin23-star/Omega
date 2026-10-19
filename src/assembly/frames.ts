@@ -19,10 +19,11 @@ const FLIP = new Matrix4().makeRotationX(Math.PI)
  * 結果：兩埠原點重合、軸線相反；θ = 0 時兩個 ref 方向一致。
  * 反過來以子零件為父（re-root）時，公式形式相同、角度不變。
  */
-export function mateTransform(parentWorld: Matrix4, parentFrame: PortFrame, childFrame: PortFrame, angleDeg: number): Matrix4 {
-  return parentWorld
-    .clone()
-    .multiply(frameMatrix(parentFrame))
+export function mateTransform(parentWorld: Matrix4, parentFrame: PortFrame, childFrame: PortFrame, angleDeg: number, offset = 0): Matrix4 {
+  // offset：沿父零件埠的軸往外拉開（爆炸圖）
+  const m = parentWorld.clone().multiply(frameMatrix(parentFrame))
+  if (offset) m.multiply(new Matrix4().makeTranslation(0, 0, offset))
+  return m
     .multiply(new Matrix4().makeRotationZ((angleDeg * Math.PI) / 180))
     .multiply(FLIP)
     .multiply(frameMatrix(childFrame).invert())
