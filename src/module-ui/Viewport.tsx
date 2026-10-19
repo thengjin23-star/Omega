@@ -12,6 +12,8 @@ import { faceGeometry, geometriesFor } from './geometryCache'
 import { useModuleStore, useTransforms } from './moduleStore'
 import { DimensionLines, MeasureOverlay } from './Measure'
 import { PortMarker } from './PortMarker'
+import { gizmoRecentlyUsed } from './gizmoClock'
+import { PoseGizmo } from './PoseGizmo'
 import { TubeView } from './TubeView'
 import { cylinderMotion, interactionOf, meshCenter, useSimPiston, useSimSignalChip, useSimValveActive } from './simulation'
 import { ViewportCameraBridge } from './viewportCamera'
@@ -74,6 +76,7 @@ function InstanceView({ instance, product, mesh, matrix }: { instance: ModuleIns
 
   const onClick = (e: ThreeEvent<MouseEvent>, partIndex: number) => {
     if (e.delta > 4) return // 拖曳旋轉視角，不是點選
+    if (gizmoRecentlyUsed()) return // 點的是操作把手（射線穿過把手打到零件）
     e.stopPropagation()
     const s = useModuleStore.getState()
     if (s.mode === 'simulate') {
@@ -221,6 +224,12 @@ function TestHook() {
         return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height }
       },
       state: () => useModuleStore.getState(),
+      /** 模組座標的點 → 螢幕座標 */
+      projectWorld(point: Vec3) {
+        const p = new Vector3(...point).project(camera)
+        const rect = gl.domElement.getBoundingClientRect()
+        return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height }
+      },
       transforms: () => {
         const { doc, products } = useModuleStore.getState()
         return computeTransforms(doc, products).transforms
@@ -233,7 +242,11 @@ function TestHook() {
           doc.instances.flatMap((i) => {
             const mesh = meshes[products[i.productId]?.source.sha256 ?? '']
             if (!mesh || !transforms[i.id]) return []
-            const box = new Box3(new Vector3(...mesh.bbox.min), new Vector3(...mesh.bbox.max)).applyMatrix4(new Matrix4().fromArray(transforms[i.id]))
+            // 由頂點算出的緊外框（與零件自己的座標軸方向無關）
+            const m = new Matrix4().fromArray(transforms[i.id])
+            const box = new Box3()
+            const v = new Vector3()
+            for (const part of mesh.parts) for (let k = 0; k < part.positions.length; k += 3) box.expandByPoint(v.fromArray(part.positions, k).applyMatrix4(m))
             return [[i.id, [box.min.toArray(), box.max.toArray()]]]
           }),
         )
@@ -258,7 +271,7 @@ export function Viewport() {
       className="touch-none"
       camera={{ position: [260, -320, 220], up: [0, 0, 1], fov: 40, near: 0.5, far: 50000 }}
       onPointerMissed={(e) => {
-        if (e.type !== 'click') return
+        if (e.type !== 'click' || gizmoRecentlyUsed()) return
         const s = useModuleStore.getState()
         if (s.connectFrom) s.cancelConnect()
         else if (s.mode === 'tube') s.setMode('tube')
@@ -285,6 +298,7 @@ export function Viewport() {
         ))}
       </group>
       <OrbitControls makeDefault enableDamping={false} />
+      <PoseGizmo />
       <GizmoHelper alignment="bottom-right" margin={[64, 64]}>
         <GizmoViewport axisColors={['#dc2626', '#16a34a', '#2563eb']} labelColor="white" />
       </GizmoHelper>

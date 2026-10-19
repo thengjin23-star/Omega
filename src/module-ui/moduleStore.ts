@@ -205,6 +205,23 @@ interface State {
   attachMany(list: { at: PortRef; productId: string; portId: string }[]): Promise<void>
   /** 更換零件的產品，盡量保留原本的鎖合 */
   replaceInstanceProduct(instanceId: string, productId: string): Promise<void>
+  /** 3D 畫面上的操作把手：拖曳移動或旋轉選取的零件 */
+  gizmo?: 'move' | 'rotate'
+  /** 拖曳操作把手時，開始拖曳前的模組（結束時記一步復原） */
+  transformStart?: ModuleDoc
+  setGizmo(gizmo: 'move' | 'rotate' | undefined): void
+  /** 選取的零件繞自己的外框中心旋轉（模組的 X／Y／Z 軸，度）；鎖合在別的零件上時整組一起轉 */
+  rotateSelected(axis: 'x' | 'y' | 'z', deg: number): void
+  /** 選取的零件平移（mm）；鎖合在別的零件上時整組一起動 */
+  moveSelected(delta: Vec3): void
+  /** 根零件：直接輸入位置（外框中心，mm）與方向（依 X→Y→Z 的轉角，度） */
+  setSelectedPose(pose: { center: Vec3; rotation: Vec3 }): void
+  /** 根零件：恢復零件檔本身的方向（外框中心不動） */
+  resetSelectedRotation(): void
+  /** 拖曳操作把手：開始、預覽（不記入復原）、結束（整個拖曳記一步復原） */
+  beginTransform(): void
+  previewTransform(delta: number[]): void
+  endTransform(): void
   /** 複製選取的零件（不含鎖合） */
   duplicateSelected(): Promise<void>
   /**
@@ -547,6 +564,23 @@ export const useModuleStore = create<State>()((set, get) => {
   }
 
   /** 新零件放在目前模組的右側、底面貼齊 z = 0 */
+  /** 零件自己座標中的外框中心 */
+  const localCenterOf = (instanceId: string): Vec3 | undefined => {
+    const { doc, products, meshes } = get()
+    const inst = doc.instances.find((i) => i.id === instanceId)
+    const mesh = inst && meshes[products[inst.productId]?.source.sha256 ?? '']
+    return mesh && (mesh.bbox.min.map((v, k) => (v + mesh.bbox.max[k]) / 2) as Vec3)
+  }
+
+  /** 零件外框中心在模組中的位置（旋轉的中心） */
+  const worldCenterOf = (instanceId: string): Vec3 | undefined => {
+    const local = localCenterOf(instanceId)
+    if (!local) return undefined
+    const { doc, products } = get()
+    const world = ops.computeTransforms(doc, products).transforms[instanceId]
+    return world && (new Vector3(...local).applyMatrix4(new Matrix4().fromArray(world)).toArray() as Vec3)
+  }
+
   const placementBeside = (mesh: Tessellation): number[] => {
     const { doc, products, meshes } = get()
     const { transforms } = ops.computeTransforms(doc, products)
@@ -1129,6 +1163,55 @@ export const useModuleStore = create<State>()((set, get) => {
       } catch (err) {
         fail(err)
       }
+    },
+
+    setGizmo(gizmo) {
+      set({ gizmo })
+    },
+
+    rotateSelected(axis, deg) {
+      const { selected, doc, products } = get()
+      const center = selected && worldCenterOf(selected)
+      if (!selected || !center) return
+      commit(ops.transformGroup(doc, products, selected, ops.rotationAbout(axis, deg, center)))
+    },
+
+    moveSelected(delta) {
+      const { selected, doc, products } = get()
+      if (!selected || !doc.instances.some((i) => i.id === selected)) return
+      commit(ops.transformGroup(doc, products, selected, new Matrix4().makeTranslation(...delta).toArray()))
+    },
+
+    setSelectedPose(pose) {
+      const { selected, doc } = get()
+      const local = selected && localCenterOf(selected)
+      if (!selected || !local || ops.parentMateOf(doc, selected)) return
+      commit(ops.setPlacement(doc, selected, ops.placementFromPose(pose, local)))
+    },
+
+    resetSelectedRotation() {
+      const { selected, doc } = get()
+      const local = selected && localCenterOf(selected)
+      if (!selected || !local || ops.parentMateOf(doc, selected)) return
+      const { center } = ops.rootPose(doc.placements[selected], local)
+      commit(ops.setPlacement(doc, selected, ops.placementFromPose({ center, rotation: [0, 0, 0] }, local)))
+    },
+
+    beginTransform() {
+      set({ transformStart: get().doc })
+    },
+
+    previewTransform(delta) {
+      const { transformStart, selected, products } = get()
+      if (!transformStart || !selected) return
+      set({ doc: ops.transformGroup(transformStart, products, selected, delta) })
+    },
+
+    endTransform() {
+      const { transformStart, doc } = get()
+      if (!transformStart) return
+      set({ transformStart: undefined, doc: transformStart })
+      if (doc !== transformStart) commit(doc)
     },
 
     async duplicateSelected() {

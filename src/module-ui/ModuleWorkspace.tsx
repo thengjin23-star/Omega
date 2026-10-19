@@ -101,7 +101,8 @@ function useKeyboard() {
       if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return
       const s = useModuleStore.getState()
       if (e.key === 'Escape') {
-        if (s.connectFrom) s.cancelConnect()
+        if (s.gizmo) s.setGizmo(undefined)
+        else if (s.connectFrom) s.cancelConnect()
         else if (s.mode === 'tube' && s.tubeFrom) s.setMode('tube')
         else if (s.mode === 'measure' && s.measure.length) s.clearMeasure()
         else if (s.mode !== 'select') s.setMode('select')
@@ -115,6 +116,10 @@ function useKeyboard() {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && (s.selected || s.selectedTube)) {
         e.preventDefault()
         s.removeSelected()
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && s.selected && s.mode === 'select' && (e.key === 'm' || e.key === 'M' || e.key === 'r' || e.key === 'R')) {
+        // M：拖曳移動、R：拖曳旋轉（再按一次關閉）
+        const g = e.key.toLowerCase() === 'm' ? 'move' : 'rotate'
+        s.setGizmo(s.gizmo === g ? undefined : g)
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) s.redo()

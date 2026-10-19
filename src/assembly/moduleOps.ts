@@ -1,4 +1,4 @@
-import { Matrix4 } from 'three'
+import { Euler, Matrix4, Vector3 } from 'three'
 import type { Product, ProductPort } from '../catalog/types'
 import { checkMate, specKey, type MateResult } from '../threads'
 import { newId } from '../utils/id'
@@ -276,6 +276,68 @@ export function setMateAngle(doc: ModuleDoc, mateId: string, angle: number): Mod
 /** 移動根零件（未鎖合的群組）的位置 */
 export function setPlacement(doc: ModuleDoc, instance: string, placement: Mat4): ModuleDoc {
   return touch(doc, { placements: { ...doc.placements, [instance]: placement } })
+}
+
+/** 零件所在群組的根零件（沒有父零件的那一個） */
+export function rootOf(doc: ModuleDoc, instance: string): string {
+  let cur = instance
+  for (let guard = 0; guard <= doc.instances.length; guard++) {
+    const parent = parentMateOf(doc, cur)
+    if (!parent) return cur
+    cur = parent.parent.instance
+  }
+  return cur
+}
+
+/**
+ * 在模組座標中移動／旋轉零件（delta 套在目前的世界矩陣左邊）。位置由根零件決定：
+ * 根零件直接改它的位置；鎖合在別的零件上的零件，等於整組（根零件）一起動。鎖合關係不變。
+ */
+export function transformGroup(doc: ModuleDoc, products: ProductMap, instance: string, delta: Mat4): ModuleDoc {
+  const root = rootOf(doc, instance)
+  const { transforms } = computeTransforms(doc, products)
+  return setPlacement(doc, root, fromMatrix(toMatrix(delta).multiply(toMatrix(transforms[root]))))
+}
+
+/** 繞通過 pivot 的 X／Y／Z 軸旋轉 deg 度的矩陣 */
+export function rotationAbout(axis: 'x' | 'y' | 'z', deg: number, pivot: Vec3): Mat4 {
+  const rad = (deg * Math.PI) / 180
+  const r = axis === 'x' ? new Matrix4().makeRotationX(rad) : axis === 'y' ? new Matrix4().makeRotationY(rad) : new Matrix4().makeRotationZ(rad)
+  // 90° 的倍數取整，避免反覆旋轉累積誤差
+  if (Math.abs(deg % 90) < 1e-9) r.elements.forEach((v, i) => (r.elements[i] = Math.round(v)))
+  return fromMatrix(new Matrix4().makeTranslation(...pivot).multiply(r).multiply(new Matrix4().makeTranslation(-pivot[0], -pivot[1], -pivot[2])))
+}
+
+/**
+ * 根零件的位置與方向：center = 零件外框中心在模組中的位置（mm），rotation = 依 X→Y→Z 順序的轉角（度）。
+ * localCenter 是零件自己座標中的外框中心（旋轉時以它為中心，零件不會飛走）。
+ */
+export function rootPose(placement: Mat4 | undefined, localCenter: Vec3): { center: Vec3; rotation: Vec3 } {
+  const m = toMatrix(placement)
+  const center = new Vector3(...localCenter).applyMatrix4(m).toArray() as Vec3
+  const e = new Euler().setFromRotationMatrix(m, 'XYZ')
+  // 角度取 (-180, 180]，小數 3 位
+  const deg = (v: number) => {
+    const d = Math.round(((v * 180) / Math.PI) * 1000) / 1000
+    if (Math.abs(d) < 1e-6) return 0
+    return d <= -180 ? d + 360 : d
+  }
+  return { center, rotation: [deg(e.x), deg(e.y), deg(e.z)] }
+}
+
+/** 由位置與方向（rootPose 的格式）算出根零件的矩陣 */
+export function placementFromPose(pose: { center: Vec3; rotation: Vec3 }, localCenter: Vec3): Mat4 {
+  const [x, y, z] = pose.rotation.map((d) => (d * Math.PI) / 180)
+  const r = new Matrix4().makeRotationFromEuler(new Euler(x, y, z, 'XYZ'))
+  r.elements.forEach((v, i) => {
+    if (Math.abs(v - Math.round(v)) < 1e-12) r.elements[i] = Math.round(v)
+  })
+  return fromMatrix(
+    new Matrix4()
+      .makeTranslation(...pose.center)
+      .multiply(r)
+      .multiply(new Matrix4().makeTranslation(-localCenter[0], -localCenter[1], -localCenter[2])),
+  )
 }
 
 /** 兩個埠鎖合後能否繞軸旋轉：任一端固定即固定；有等分限制時取步數較少者 */

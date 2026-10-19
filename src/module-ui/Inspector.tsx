@@ -3,7 +3,7 @@ import { bomColumns, bomTotal, buildBom } from '../assembly/bom'
 import { formatMoney } from '../utils/money'
 import { suggestPartners } from '../assembly/memory'
 import { attachmentBranches } from '../assembly/copyAttachments'
-import { estimateTubeLengthOf, getPort, mateChecks, mateRotation, usedPorts } from '../assembly/moduleOps'
+import { estimateTubeLengthOf, getPort, groupOf, mateChecks, mateRotation, parentMateOf, rootPose, usedPorts } from '../assembly/moduleOps'
 import { useLibraryStore } from '../catalog/library'
 import { effectivePneumatic, isCircuitType, pneumaticTypeLabel } from '../catalog/pneumatic'
 import { CATEGORY_LABEL, hasModel, productLabel, type Product, type ProductCategory } from '../catalog/types'
@@ -157,6 +157,7 @@ function PartTab() {
   return (
     <div className="space-y-4 p-3">
       <ProductForm key={product.id} product={product} />
+      <PoseSection instanceId={inst.id} />
       <PneumaticSection product={product} />
       <SignalSection key={inst.id} instanceId={inst.id} product={product} />
       <MotionSection product={product} />
@@ -192,6 +193,157 @@ function PartTab() {
         從模組移除這個零件
       </Button>
     </div>
+  )
+}
+
+/** 數字輸入：離開或按 Enter 時套用；外部的值改變（例如復原）時更新 */
+function NumberField({ label, value, unit, onCommit, step = 1 }: { label: string; value: number; unit: string; onCommit: (v: number) => void; step?: number }) {
+  const shown = Math.round(value * 100) / 100
+  return (
+    <label className="flex min-w-0 items-center gap-0.5 text-xs text-slate-500">
+      <span className="shrink-0 font-medium text-slate-600">{label}</span>
+      <input
+        key={shown}
+        type="number"
+        step={step}
+        defaultValue={shown}
+        aria-label={`${label} ${unit}`}
+        className="h-7 w-full min-w-0 rounded border border-slate-300 bg-white px-1 text-right text-xs text-slate-800"
+        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        onBlur={(e) => {
+          const v = Number(e.currentTarget.value)
+          if (Number.isFinite(v) && Math.abs(v - shown) > 1e-9) onCommit(v)
+          else e.currentTarget.value = String(shown)
+        }}
+      />
+    </label>
+  )
+}
+
+const POSE_AXES = ['x', 'y', 'z'] as const
+
+/**
+ * 位置與方向：
+ * - 沒有鎖合在別的零件上（根零件）：直接輸入位置／轉角、按鈕轉 90°、恢復原始方向；接在它上面的零件一起動
+ * - 鎖合在別的零件上：只能繞接口軸轉（鎖合角度），或拆開後自由移動；也可以整組一起轉
+ */
+function PoseSection({ instanceId }: { instanceId: string }) {
+  const doc = useModuleStore((s) => s.doc)
+  const products = useModuleStore((s) => s.products)
+  const meshes = useModuleStore((s) => s.meshes)
+  const gizmo = useModuleStore((s) => s.gizmo)
+  const { setGizmo, rotateSelected, setSelectedPose, resetSelectedRotation, rotateMate, disconnectMate } = useModuleStore.getState()
+  const inst = doc.instances.find((i) => i.id === instanceId)
+  const mesh = inst && meshes[products[inst.productId]?.source.sha256 ?? '']
+  const mate = parentMateOf(doc, instanceId)
+  const group = groupOf(doc, instanceId).size
+  if (!inst || !mesh) return null
+  const local = mesh.bbox.min.map((v, k) => (v + mesh.bbox.max[k]) / 2) as Vec3
+  const pose = rootPose(doc.placements[instanceId], local)
+  const gizmoButtons = (
+    <span className="flex gap-1">
+      {(['move', 'rotate'] as const).map((g) => (
+        <Button
+          key={g}
+          size="sm"
+          variant={gizmo === g ? 'primary' : 'default'}
+          onClick={() => setGizmo(gizmo === g ? undefined : g)}
+          title={g === 'move' ? '在 3D 畫面拖曳箭頭移動（快捷鍵 M）' : '在 3D 畫面拖曳圓環旋轉，每格 15°（快捷鍵 R）'}
+        >
+          {g === 'move' ? '拖曳移動' : '拖曳旋轉'}
+        </Button>
+      ))}
+    </span>
+  )
+  const quickTurns = (
+    <div className="space-y-1">
+      {POSE_AXES.map((axis) => (
+        <div key={axis} className="flex items-center gap-1 text-xs">
+          <span className="w-10 shrink-0 text-slate-500">繞 {axis.toUpperCase()}</span>
+          {[-90, 90, 180].map((d) => (
+            <Button key={d} size="sm" onClick={() => rotateSelected(axis, d)} aria-label={`繞 ${axis.toUpperCase()} 轉 ${d}°`}>
+              {d > 0 ? `+${d}°` : `${d}°`}
+            </Button>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+  if (mate) {
+    const rotation = mateRotation(getPort(doc, products, mate.parent), getPort(doc, products, mate.child))
+    const steps = rotation === 'fixed' ? [] : rotation === 'free' ? [-90, -15, 15, 90] : [360 / rotation.steps]
+    return (
+      <section className="space-y-2 rounded-md border border-slate-200 p-2" aria-label="位置與方向">
+        <header className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-700">位置與方向</h3>
+          {gizmoButtons}
+        </header>
+        <p className="text-xs leading-5 text-slate-600">
+          鎖合在 <strong>{portLabel(doc, products, mate.parent)}</strong> 上：位置由鎖合決定。
+        </p>
+        {steps.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1 text-xs">
+            <span className="mr-1 text-slate-500">繞接口轉（目前 {mate.angle}°）</span>
+            {steps.map((d) => (
+              <Button key={d} size="sm" onClick={() => rotateMate(mate.id, d)}>
+                {d > 0 ? `+${d}°` : `${d}°`}
+              </Button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">安裝面固定方向，不能繞接口轉。</p>
+        )}
+        <details className="text-xs">
+          <summary className="cursor-pointer text-slate-600">整組一起轉（{group} 個零件）</summary>
+          <div className="mt-1">{quickTurns}</div>
+          <p className="mt-1 text-slate-500">「拖曳移動／旋轉」也是整組一起動，鎖合不變。</p>
+        </details>
+        <Button size="sm" variant="danger" onClick={() => disconnectMate(mate.id)} title="拆開這個鎖合後，這個零件（與接在它上面的零件）可以自由移動、旋轉">
+          拆開，自由移動
+        </Button>
+      </section>
+    )
+  }
+  return (
+    <section className="space-y-2 rounded-md border border-slate-200 p-2" aria-label="位置與方向">
+      <header className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-700">位置與方向</h3>
+        {gizmoButtons}
+      </header>
+      <div className="grid grid-cols-[3.2rem_1fr_1fr_1fr] items-center gap-1" data-pose-center={pose.center.map((v) => v.toFixed(2)).join(',')}>
+        <span className="text-xs text-slate-500">位置 mm</span>
+        {POSE_AXES.map((axis, k) => (
+          <NumberField
+            key={axis}
+            label={axis.toUpperCase()}
+            unit="mm"
+            value={pose.center[k]}
+            onCommit={(v) => setSelectedPose({ center: pose.center.map((c, i) => (i === k ? v : c)) as Vec3, rotation: pose.rotation })}
+          />
+        ))}
+      </div>
+      <div className="grid grid-cols-[3.2rem_1fr_1fr_1fr] items-center gap-1" data-pose-rotation={pose.rotation.join(',')}>
+        <span className="text-xs text-slate-500">轉角 °</span>
+        {POSE_AXES.map((axis, k) => (
+          <NumberField
+            key={axis}
+            label={axis.toUpperCase()}
+            unit="°"
+            step={15}
+            value={pose.rotation[k]}
+            onCommit={(v) => setSelectedPose({ center: pose.center, rotation: pose.rotation.map((r, i) => (i === k ? v : r)) as Vec3 })}
+          />
+        ))}
+      </div>
+      <p className="text-[11px] leading-4 text-slate-400">位置是零件外框中心；轉角依 X→Y→Z 順序，以外框中心為旋轉中心。</p>
+      {quickTurns}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={pose.rotation.every((r) => r === 0)} onClick={resetSelectedRotation}>
+          恢復原始方向
+        </Button>
+        {group > 1 && <span className="text-xs text-slate-500">接在它上面的 {group - 1} 個零件一起動（鎖合不變）</span>}
+      </div>
+    </section>
   )
 }
 
