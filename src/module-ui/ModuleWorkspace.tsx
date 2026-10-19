@@ -122,6 +122,13 @@ function useKeyboard() {
         // M：拖曳移動、R：拖曳旋轉（再按一次關閉）
         const g = e.key.toLowerCase() === 'm' ? 'move' : 'rotate'
         s.setGizmo(s.gizmo === g ? undefined : g)
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'c' && s.selected && !window.getSelection()?.toString()) {
+        // Ctrl+C：複製選取的零件與接在上面的零件（畫面上有選取文字時保留瀏覽器的複製）
+        e.preventDefault()
+        s.copySelectedUnit()
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'v' && s.clipboard) {
+        e.preventDefault()
+        void s.pasteUnit()
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) s.redo()

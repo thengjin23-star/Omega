@@ -3,6 +3,7 @@ import { bomColumns, bomTotal, buildBom } from '../assembly/bom'
 import { formatMoney } from '../utils/money'
 import { suggestPartners } from '../assembly/memory'
 import { mateHints } from '../assembly/mateHints'
+import { copyUnit, freeMountPorts } from '../assembly/unitClipboard'
 import { attachmentBranches } from '../assembly/copyAttachments'
 import { estimateTubeLengthOf, getPort, groupOf, mateChecks, mateRotation, parentMateOf, rootPose, usedPorts } from '../assembly/moduleOps'
 import { useLibraryStore } from '../catalog/library'
@@ -405,8 +406,15 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
   const applyToSameParts = useModuleStore((s) => s.applyToSameParts)
   const splitInstance = useModuleStore((s) => s.splitInstance)
   const mesh = useModuleStore((s) => s.meshes[product.source.sha256])
-  // STEP 有好幾個頂層零件（組立檔，或多實體的單一零件）：可以依結構拆開；舊資料沒有記下結構時，有多個實體就讓使用者試
-  const splittable = product.source.format === 'step' && !!mesh && (mesh.groups ? mesh.groups.length >= 2 : mesh.parts.length >= 2)
+  // STEP 有好幾個頂層零件：可以依結構拆開。一般零件也常由好幾個實體組成（本體、線圈…），所以只在
+  // 看起來是組立檔（「項次_型號」）或還沒認出種類（其他、集裝座：可能是整組閥島）時提供；舊資料沒有記下結構時有多個實體就讓使用者試
+  const groups = mesh?.groups
+  const looksAssembly = !!groups && groups.length >= 2 && groups.every((g) => /^\d+_/.test(g.name))
+  const splittable =
+    product.source.format === 'step' &&
+    !!mesh &&
+    (groups ? groups.length >= 2 : mesh.parts.length >= 2) &&
+    (looksAssembly || product.category === 'other' || product.category === 'manifold')
   // 模組中還有幾個相同的零件、這個零件上接了幾串零件（可以照樣套用）
   const same = useMemo(() => doc.instances.filter((i) => i.productId === product.id && i.id !== instanceId).length, [doc.instances, product.id, instanceId])
   const branches = useMemo(() => (same ? attachmentBranches(doc, instanceId).length : 0), [doc, instanceId, same])
@@ -434,8 +442,8 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
         <Button size="sm" onClick={() => setReplacing(true)}>
           更換零件…
         </Button>
-        <Button size="sm" onClick={() => void duplicateSelected()}>
-          複製
+        <Button size="sm" onClick={() => void duplicateSelected()} title="只複製這一個零件（不含接在上面的零件），放在旁邊">
+          複製單一零件
         </Button>
         {same > 0 && (
           <Button
@@ -461,8 +469,50 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
           </Button>
         )}
       </div>
+      <UnitClipboardActions instanceId={instanceId} />
       {replacing && <ReplaceDialog instanceId={instanceId} current={product} onClose={() => setReplacing(false)} />}
     </section>
+  )
+}
+
+/** 複製／貼上一組零件（例如閥＋接頭）：貼上時裝到下一個空的同規格站位 */
+function UnitClipboardActions({ instanceId }: { instanceId: string }) {
+  const doc = useModuleStore((s) => s.doc)
+  const products = useModuleStore((s) => s.products)
+  const clipboard = useModuleStore((s) => s.clipboard)
+  const { copySelectedUnit, pasteUnit } = useModuleStore.getState()
+  const unit = useMemo(() => copyUnit(doc, products, instanceId), [doc, products, instanceId])
+  // 貼到哪個底座：選取的零件有空站就是它，否則是原本的底座
+  const free = useMemo(() => {
+    if (!clipboard?.mount) return 0
+    const here = freeMountPorts(doc, products, clipboard, instanceId).length
+    if (here) return here
+    return doc.instances.some((i) => i.id === clipboard.mount!.baseInstance) ? freeMountPorts(doc, products, clipboard, clipboard.mount.baseInstance).length : 0
+  }, [doc, products, clipboard, instanceId])
+  if (!unit) return null
+  return (
+    <div className="space-y-1.5 rounded-md bg-slate-50 p-2" aria-label="複製一組">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={copySelectedUnit} title="複製這個零件與接在它上面的零件（不含底座），快捷鍵 Ctrl+C">
+          複製這組{unit.members.length > 1 ? `（${unit.members.length} 個零件）` : ''}
+        </Button>
+        <Button size="sm" variant={clipboard ? 'primary' : 'default'} disabled={!clipboard} onClick={() => void pasteUnit()} title="貼上一組：裝到下一個空的同規格站位，快捷鍵 Ctrl+V">
+          貼上
+        </Button>
+        {free > 1 && (
+          <Button size="sm" onClick={() => void pasteUnit('all')} title="一次填滿所有空的同規格站位">
+            填滿 {free} 個空站
+          </Button>
+        )}
+      </div>
+      {clipboard && (
+        <p className="text-[11px] leading-4 text-slate-500" data-clipboard={clipboard.label}>
+          已複製：{clipboard.label}
+          {clipboard.members.length > 1 ? ` 等 ${clipboard.members.length} 個零件` : ''}
+          {clipboard.mount ? `；貼上時裝到${free ? `下一個空站（還有 ${free} 個）` : '旁邊（沒有空站）'}` : '；貼在旁邊'}
+        </p>
+      )}
+    </div>
   )
 }
 

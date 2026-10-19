@@ -53,6 +53,7 @@ import { add, scale, type Vec3 } from '../geometry/vec3'
 import { checkMate, formatSpecShort, type PortSpec } from '../threads'
 import { downloadFile, safeFileName } from '../utils/download'
 import { planRestore, restoreModule } from '../assembly/stepRestore'
+import { copyUnit, freeMountPorts, pasteUnit as pasteUnitInto, type UnitClip } from '../assembly/unitClipboard'
 import { extractStepPartsInWorker } from '../drawing/stepClient'
 import { readStepMeta, type StepModuleMeta } from '../drawing/stepMeta'
 import { renderThumbnail } from './thumbnail'
@@ -229,6 +230,12 @@ interface State {
   endTransform(): void
   /** 複製選取的零件（不含鎖合） */
   duplicateSelected(): Promise<void>
+  /** 複製的一組零件（Ctrl+C）：例如閥＋接在閥上的接頭；貼上時裝到下一個空的同規格站位 */
+  clipboard?: UnitClip & { label: string }
+  /** 複製選取的零件與接在它上面的零件（不含底座） */
+  copySelectedUnit(): void
+  /** 貼上：count 組（'all' = 填滿底座所有空的同規格站位）；選取的零件是有空站的底座時貼到它上面 */
+  pasteUnit(count?: number | 'all'): Promise<void>
   /**
    * 依 STEP 檔的結構把一個零件拆成數個零件（例如其他 CAD 存的組立檔、舊版匯出的模組 STEP）：
    * 每個頂層零件建立一個產品，放在原本的位置
@@ -584,6 +591,21 @@ export const useModuleStore = create<State>()((set, get) => {
     const { doc, products } = get()
     const world = ops.computeTransforms(doc, products).transforms[instanceId]
     return world && (new Vector3(...local).applyMatrix4(new Matrix4().fromArray(world)).toArray() as Vec3)
+  }
+
+  /** 貼在旁邊（不與其他零件重疊）：保持 world 的方向，往 +X 放在所有零件的右邊 */
+  const placementBesideMatrix = (world: number[], productId: string): number[] => {
+    const { doc, products, meshes } = get()
+    const mesh = meshes[products[productId]?.source.sha256 ?? '']
+    const { transforms } = ops.computeTransforms(doc, products)
+    const all = new Box3()
+    for (const inst of doc.instances) {
+      const m = meshes[products[inst.productId]?.source.sha256 ?? '']
+      if (m && transforms[inst.id]) all.union(new Box3(new Vector3(...m.bbox.min), new Vector3(...m.bbox.max)).applyMatrix4(new Matrix4().fromArray(transforms[inst.id])))
+    }
+    const own = mesh ? new Box3(new Vector3(...mesh.bbox.min), new Vector3(...mesh.bbox.max)).applyMatrix4(new Matrix4().fromArray(world)) : undefined
+    const dx = all.isEmpty() || !own ? 0 : all.max.x + 30 - own.min.x
+    return new Matrix4().makeTranslation(dx, 0, 0).multiply(new Matrix4().fromArray(world)).toArray()
   }
 
   const placementBeside = (mesh: Tessellation): number[] => {
@@ -1225,6 +1247,58 @@ export const useModuleStore = create<State>()((set, get) => {
       if (!transformStart) return
       set({ transformStart: undefined, doc: transformStart })
       if (doc !== transformStart) commit(doc)
+    },
+
+    copySelectedUnit() {
+      const { selected, doc, products } = get()
+      if (!selected) return
+      const clip = copyUnit(doc, products, selected)
+      if (!clip) return
+      // 訊號名稱不複製（避免重複），開始模擬時會自動指定
+      const members = clip.members.map((m) => {
+        const params = Object.fromEntries(Object.entries(m.params ?? {}).filter(([k]) => !SIGNAL_PARAM_NAMESPACE[k] && k !== 'trigger'))
+        return { productId: m.productId, ...(Object.keys(params).length && { params }) }
+      })
+      const label = productLabel(products[clip.members[0].productId])
+      set({ clipboard: { ...clip, members, label } })
+      const others = clip.members.length - 1
+      const free = clip.mount ? freeMountPorts(doc, products, clip, clip.mount.baseInstance).length : 0
+      info(
+        `已複製「${label}」${others ? `與接在上面的 ${others} 個零件` : ''}。按 Ctrl+V（或右側「貼上」）${clip.mount ? `裝到下一個空站（還有 ${free} 個）` : '貼在旁邊'}。`,
+      )
+    },
+
+    async pasteUnit(count = 1) {
+      const { clipboard: clip, selected, products } = get()
+      if (!clip) return
+      try {
+        for (const m of clip.members) await ensureMesh(products[m.productId])
+        let doc = get().doc
+        // 選取的是有空站的底座（例如另一個集裝座）：貼到它上面
+        const base = selected && freeMountPorts(doc, products, clip, selected).length ? selected : undefined
+        const baseId = base ?? (clip.mount && doc.instances.some((i) => i.id === clip.mount!.baseInstance) ? clip.mount.baseInstance : undefined)
+        const free = baseId ? freeMountPorts(doc, products, clip, baseId).length : 0
+        const times = count === 'all' ? Math.max(1, free) : count
+        const placed: string[] = []
+        let last: string | undefined
+        for (let k = 0; k < times; k++) {
+          const r = pasteUnitInto(doc, products, clip, { base, freePlacement: placementBesideMatrix(clip.world, clip.members[0].productId) })
+          if (!r) throw new Error('貼不上：複製的零件已不在產品庫，或接口已改變')
+          doc = r.doc
+          last = r.instances[0]
+          placed.push(r.mountedOn ? (ops.getPort(doc, products, r.mountedOn)?.name ?? '') : '旁邊')
+        }
+        commit(doc)
+        set({ selected: last })
+        const mounted = placed.filter((p) => p !== '旁邊')
+        info(
+          mounted.length
+            ? `已貼上 ${placed.length} 組「${clip.label}」：裝在 ${mounted.join('、')}${placed.length > mounted.length ? '；沒有空站的放在旁邊' : ''}。每組都是獨立的零件，可以個別調整。`
+            : `已貼上「${clip.label}」${clip.mount ? '（底座沒有空的同規格站位，放在旁邊）' : '，放在旁邊'}。`,
+        )
+      } catch (err) {
+        fail(err)
+      }
     },
 
     async duplicateSelected() {
