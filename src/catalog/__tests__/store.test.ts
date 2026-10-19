@@ -1,11 +1,14 @@
 import 'fake-indexeddb/auto'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { formatSpec, parseSpec } from '../../threads'
 import { exportBackupArchive, exportLibraryArchive, exportModuleArchive, importArchive } from '../archive'
 import { CatalogStore } from '../db'
 import { attachCadFile, createModelOnlyProduct, guessModelCode, importCadFile } from '../importer'
 import { installSamples } from '../samples'
 import { nodeParser, readFixture, readSample, sampleManifest, uniqueDbName } from './nodeHelpers'
+
+// 安裝範例零件要解析 12 個 STEP 檔：整套測試同時跑時會超過預設的 5 秒
+vi.setConfig({ testTimeout: 30_000 })
 
 const open = () => CatalogStore.open(uniqueDbName())
 
