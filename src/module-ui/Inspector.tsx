@@ -204,6 +204,10 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
   const duplicateSelected = useModuleStore((s) => s.duplicateSelected)
   const [replacing, setReplacing] = useState(false)
   const applyToSameParts = useModuleStore((s) => s.applyToSameParts)
+  const splitInstance = useModuleStore((s) => s.splitInstance)
+  const mesh = useModuleStore((s) => s.meshes[product.source.sha256])
+  // STEP 有好幾個頂層零件（組立檔，或多實體的單一零件）：可以依結構拆開；舊資料沒有記下結構時，有多個實體就讓使用者試
+  const splittable = product.source.format === 'step' && !!mesh && (mesh.groups ? mesh.groups.length >= 2 : mesh.parts.length >= 2)
   // 模組中還有幾個相同的零件、這個零件上接了幾串零件（可以照樣套用）
   const same = useMemo(() => doc.instances.filter((i) => i.productId === product.id && i.id !== instanceId).length, [doc.instances, product.id, instanceId])
   const branches = useMemo(() => (same ? attachmentBranches(doc, instanceId).length : 0), [doc, instanceId, same])
@@ -246,6 +250,15 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
             }
           >
             套用到其他 {same} 個相同零件
+          </Button>
+        )}
+        {splittable && (
+          <Button
+            size="sm"
+            onClick={() => void splitInstance(instanceId)}
+            title="這個 STEP 檔由好幾個頂層零件組成（例如組立檔）：拆成個別零件，各自放在原本的位置。一般的多實體零件（本體＋線圈…）不用拆。"
+          >
+            依 STEP 結構拆開{mesh?.groups ? `（${mesh.groups.length}）` : ''}
           </Button>
         )}
       </div>

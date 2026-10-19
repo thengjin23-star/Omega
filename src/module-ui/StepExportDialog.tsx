@@ -3,6 +3,7 @@ import { computeTransforms } from '../assembly/moduleOps'
 import { getCatalog } from '../catalog/library'
 import { Button, Dialog } from '../components/ui'
 import { exportAssemblyStep, type StepProgress } from '../drawing/stepClient'
+import { buildStepMeta, embedStepMeta } from '../drawing/stepMeta'
 import { collectStepParts } from '../drawing/stepParts'
 import { downloadFile, safeFileName } from '../utils/download'
 import { useModuleStore } from './moduleStore'
@@ -30,11 +31,19 @@ export function StepExportDialog({ onClose }: { onClose: () => void }) {
         if (!file) throw new Error('找不到零件的原始 STEP 檔（可能是從舊版的封存檔匯入）')
         files[sha] = file.bytes
       }
-      const bytes = await exportAssemblyStep(
+      const step = await exportAssemblyStep(
         { files, parts: plan.parts, tubes: plan.tubes },
         (progress) => setPhase({ kind: 'running', progress }),
         controller.signal,
       )
+      // 模組資料（零件、位置、鎖合）寫在 STEP 的註解裡：再匯入本程式時可以完整還原；其他 CAD 會忽略
+      const colors: Record<string, string> = {}
+      for (const inst of doc.instances) {
+        const root = plan.roots[inst.id]
+        const color = root !== undefined ? plan.parts[root].color : undefined
+        if (color) colors[inst.productId] ??= color
+      }
+      const bytes = embedStepMeta(step, buildStepMeta(doc, products, plan.roots, colors))
       downloadFile(bytes, `${safeFileName(doc.name)}.step`, 'application/step')
       setPhase({ kind: 'done', bytes: bytes.length })
     } catch (err) {
@@ -72,7 +81,10 @@ export function StepExportDialog({ onClose }: { onClose: () => void }) {
           把模組中的 {plan.parts.length} 個零件{plan.tubes.length > 0 && `與 ${plan.tubes.length} 條 PU 管`}，依組立位置寫成一個 STEP 檔（AP242，單位
           mm），每個零件以「項次_型號」命名，可在 SolidWorks、Inventor、Fusion 360 等 CAD 軟體開啟。
         </p>
-        <p className="text-xs text-slate-500">第一次使用需下載 STEP 處理元件（約 23 MB），之後離線也能使用。</p>
+        <p className="text-xs text-slate-500">
+          檔案裡另外記下模組的組裝資料（零件、位置、鎖合）：再把這個 STEP 匯入本程式，會還原成可以個別操作的零件，位置與現在相同。
+          第一次使用需下載 STEP 處理元件（約 23 MB），之後離線也能使用。
+        </p>
         {plan.skipped.length > 0 && (
           <ul className="space-y-1 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
             {plan.skipped.map((s) => (

@@ -6,7 +6,7 @@ import { Matrix4, Vector3 } from 'three'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { bezierLength } from '../../assembly/tubes'
 import type { Vec3 } from '../../geometry/vec3'
-import { buildAssemblyStep, sweepTube } from '../stepAssembly'
+import { buildAssemblyStep, extractStepParts, sweepTube } from '../stepAssembly'
 
 const VALVE = new Uint8Array(readFileSync('public/samples/DEMO-VALVE-52-01.step'))
 const SILENCER = new Uint8Array(readFileSync('public/samples/DEMO-SILENCER-R18.step'))
@@ -94,6 +94,62 @@ describe('buildAssemblyStep', () => {
     await expect(buildAssemblyStep(new Map(), [{ name: '3_X', source: 'nope', matrix: new Matrix4().elements }])).rejects.toThrow('3_X')
   })
 })
+
+describe('extractStepParts', () => {
+  it('組立檔拆回各個零件：套用反向矩陣後回到零件自己的座標（與原檔外框相同）', async () => {
+    const moved = new Matrix4().makeRotationX(Math.PI / 2).premultiply(new Matrix4().makeRotationZ(Math.PI)).setPosition(120, -40, 15)
+    const bytes = await buildAssemblyStep(
+      new Map([
+        ['valve', VALVE],
+        ['silencer', SILENCER],
+      ]),
+      [
+        { name: '1_VALVE', source: 'valve', matrix: moved.elements },
+        { name: '2_SILENCER', source: 'silencer', matrix: new Matrix4().makeTranslation(0, 0, 200).elements },
+      ],
+    )
+    const [valve, silencer] = await extractStepParts(bytes, [
+      { root: 0, matrix: moved.clone().invert().elements, name: 'VALVE' },
+      { root: 1, matrix: new Matrix4().makeTranslation(0, 0, -200).elements, name: 'SILENCER' },
+    ])
+    const [original] = await readBack(VALVE).then((nodes) => [mergeBoxes(nodes)])
+    const back = mergeBoxes(await readBack(valve))
+    for (let k = 0; k < 3; k++) {
+      expect(back.min[k]).toBeCloseTo(original.min[k], 3)
+      expect(back.max[k]).toBeCloseTo(original.max[k], 3)
+    }
+    const s = mergeBoxes(await readBack(silencer))
+    const s0 = mergeBoxes(await readBack(SILENCER))
+    expect(s.min[2]).toBeCloseTo(s0.min[2], 3)
+    expect(s.max[2]).toBeCloseTo(s0.max[2], 3)
+    await expect(extractStepParts(bytes, [{ root: 5, matrix: new Matrix4().elements, name: 'X' }])).rejects.toThrow('第 6 個')
+  }, 60_000)
+
+  it('依實體編號取出：實體數或外框與網格對不上時拒絕（避免拆錯）', async () => {
+    const pick = { solids: [0], matrix: new Matrix4().elements, name: 'BODY' }
+    await expect(extractStepParts(VALVE, [{ ...pick, check: { solids: 3, min: [-25, -9, 0], max: [25, 9, 26] } }])).rejects.toThrow('對不上')
+    await expect(extractStepParts(VALVE, [{ ...pick, check: { solids: 4, min: [-25, -9, 10], max: [25, 9, 26] } }])).rejects.toThrow('對不上')
+    const [ok] = await extractStepParts(VALVE, [{ ...pick, check: { solids: 4, min: [-25, -9, 0], max: [25, 9, 26] } }])
+    expect(ok.length).toBeGreaterThan(1000)
+  }, 60_000)
+
+  it('依實體編號取出（其他 CAD 的多實體檔）', async () => {
+    // 範例閥有 4 個實體：本體、線圈、接線盒、手動按鈕；只取本體
+    const [body] = await extractStepParts(VALVE, [{ solids: [0], matrix: new Matrix4().elements, name: 'BODY' }])
+    const b = mergeBoxes(await readBack(body))
+    expect(b.min[0]).toBeCloseTo(-25, 3)
+    expect(b.max[0]).toBeCloseTo(25, 3)
+    expect(b.max[2]).toBeCloseTo(26, 3)
+  }, 60_000)
+})
+
+/** 所有頂層節點的外框合併 */
+function mergeBoxes(nodes: { min: number[]; max: number[] }[]) {
+  return {
+    min: [0, 1, 2].map((k) => Math.min(...nodes.map((n) => n.min[k]))),
+    max: [0, 1, 2].map((k) => Math.max(...nodes.map((n) => n.max[k]))),
+  }
+}
 
 describe('sweepTube', () => {
   it('沿貝茲曲線掃出環形斷面的圓管：體積＝斷面積 × 曲線長', () => {

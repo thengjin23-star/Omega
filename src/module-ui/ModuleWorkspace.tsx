@@ -210,7 +210,8 @@ function Toast() {
   const dismiss = useModuleStore((s) => s.dismissMessage)
   useEffect(() => {
     if (message?.kind !== 'info') return
-    const t = setTimeout(dismiss, 7000)
+    // 有按鈕的訊息留久一點
+    const t = setTimeout(dismiss, message.action ? 30000 : 7000)
     return () => clearTimeout(t)
   }, [message, dismiss])
   if (!message) return null
@@ -220,6 +221,19 @@ function Toast() {
       className={`absolute bottom-12 left-3 z-10 flex max-w-lg items-start gap-2 rounded-md border px-3 py-2 text-sm shadow ${message.kind === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-slate-200 bg-white text-slate-700'}`}
     >
       <span className="flex-1">{message.text}</span>
+      {message.action && (
+        <button
+          type="button"
+          className="shrink-0 rounded-md bg-blue-600 px-2 py-0.5 text-xs font-medium whitespace-nowrap text-white hover:bg-blue-700"
+          onClick={() => {
+            const run = message.action!.run
+            dismiss()
+            run()
+          }}
+        >
+          {message.action.label}
+        </button>
+      )}
       <button type="button" onClick={dismiss} className="text-slate-400 hover:text-slate-700" aria-label="關閉訊息">
         ✕
       </button>

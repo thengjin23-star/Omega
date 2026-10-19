@@ -105,6 +105,11 @@ export interface Product {
   notes?: string
   /** 通用 3D：系統依尺寸產生的示意模型（不是原廠 3D 檔），記下規格以便沿用 */
   generic?: GenericSpec
+  /**
+   * 從 STEP 組立檔取出的零件：原本那個產品的原始檔 sha256。
+   * 同一個組立檔再匯入一次時，用它認出已經取出過的零件，不會重複建立。
+   */
+  derivedFrom?: string
   createdAt: number
   updatedAt: number
 }

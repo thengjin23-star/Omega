@@ -17,6 +17,8 @@ const hex = (c: readonly number[]) =>
 
 export interface StepPlan {
   parts: StepPart[]
+  /** 零件實例 → 在 STEP 檔頂層的第幾個（與 parts 的順序相同；寫進模組資料，重新匯入時用） */
+  roots: Record<string, number>
   /** PU 管：沿畫面上的曲線掃出的圓管 */
   tubes: StepTube[]
   /** 要讀取的原始檔（sha256） */
@@ -41,6 +43,7 @@ export function collectStepParts(
   for (const inst of doc.instances) counts.set(inst.productId, (counts.get(inst.productId) ?? 0) + 1)
   const seen = new Map<string, number>()
   const parts: StepPart[] = []
+  const roots: Record<string, number> = {}
   const skipped: StepPlan['skipped'] = []
   const sources = new Set<string>()
   for (const inst of doc.instances) {
@@ -60,6 +63,7 @@ export function collectStepParts(
       continue
     }
     const color = meshes[product.source.sha256]?.parts.find((p) => p.color)?.color
+    roots[inst.id] = parts.length
     parts.push({ name, source: product.source.sha256, matrix, color: color ? hex(color) : undefined })
     sources.add(product.source.sha256)
   }
@@ -81,5 +85,5 @@ export function collectStepParts(
       color: TUBE_COLOR,
     })
   }
-  return { parts, tubes, sources: [...sources], skipped }
+  return { parts, roots, tubes, sources: [...sources], skipped }
 }

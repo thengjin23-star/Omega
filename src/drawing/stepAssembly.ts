@@ -1,6 +1,7 @@
 import {
   assembleWire,
   cast,
+  compoundShapes,
   exportSTEP,
   getOC,
   importSTEP,
@@ -95,6 +96,89 @@ function sweepOnce(tube: Pick<StepTube, 'points' | 'od' | 'id'>, start: Vec3, di
   }
 }
 
+/** 依 4×4 矩陣（只含旋轉＋平移）轉換形狀（會用掉傳入的形狀） */
+function placeShape(shape: AnyShape, matrix: ArrayLike<number>): AnyShape {
+  const { axis, angle } = rotationAxisAngle(matrix)
+  if (angle > 1e-9) shape = shape.rotate((angle * 180) / Math.PI, [0, 0, 0], axis)
+  const m = matrix
+  if (Math.abs(m[12]) + Math.abs(m[13]) + Math.abs(m[14]) > 0) shape = shape.translate([m[12], m[13], m[14]])
+  return shape
+}
+
+/** 從 STEP 檔取出的一個零件：頂層的第幾個（root），或依序第幾個實體（solids）；再以 matrix 轉換 */
+export interface StepPick {
+  root?: number
+  solids?: readonly number[]
+  /** 取出後套用的轉換（column-major 4×4），例如把模組座標換回零件自己的座標 */
+  matrix: ArrayLike<number>
+  name: string
+  /** #rrggbb */
+  color?: string
+  /** 依實體編號取出時的檢查：檔案的實體總數、這些實體（轉換前）的外框應與網格相同，否則拒絕拆開 */
+  check?: { solids: number; min: readonly number[]; max: readonly number[] }
+}
+
+/**
+ * 把 STEP 檔拆成數個零件，各自寫成一個 STEP 檔（B-rep，不是網格）：
+ * - root：檔案頂層的第 n 個產品（本程式匯出的組立檔，每個零件是一個頂層產品）
+ * - solids：全部實體依序的編號（其他 CAD 的檔案：實體與 occt-import-js 的網格一一對應）
+ */
+export async function extractStepParts(bytes: Uint8Array, picks: readonly StepPick[]): Promise<Uint8Array[]> {
+  const oc = getOC()
+  const file = `/extract-${Date.now()}-${Math.random().toString(36).slice(2)}.step`
+  oc.FS.writeFile(file, bytes)
+  const reader = new oc.STEPControl_Reader()
+  const created: AnyShape[] = []
+  try {
+    if (reader.ReadFile(file) !== oc.IFSelect_ReturnStatus.IFSelect_RetDone) throw new Error('無法讀取這個 STEP 檔')
+    reader.TransferRoots(new oc.Message_ProgressRange())
+    const roots = reader.NbShapes()
+    let solids: AnyShape[] | undefined
+    const out: Uint8Array[] = []
+    for (const pick of picks) {
+      let shape: AnyShape
+      if (pick.root !== undefined) {
+        if (pick.root < 0 || pick.root >= roots) throw new Error(`STEP 檔沒有第 ${pick.root + 1} 個零件（共 ${roots} 個）`)
+        shape = cast(reader.Shape(pick.root + 1))
+      } else {
+        if (!solids) {
+          const one = cast(reader.OneShape())
+          created.push(one)
+          solids = (one as Shape3D).solids
+          created.push(...solids)
+        }
+        if (pick.check && pick.check.solids !== solids.length)
+          throw new Error(`STEP 檔的實體（${solids.length} 個）與畫面上的網格（${pick.check.solids} 個）對不上，無法依結構拆開`)
+        const list = (pick.solids ?? []).map((i) => {
+          const solid = solids![i]
+          if (!solid) throw new Error(`STEP 檔沒有第 ${i + 1} 個實體`)
+          return solid.clone()
+        })
+        shape = list.length === 1 ? list[0] : compoundShapes(list as Shape3D[])
+        if (pick.check) {
+          const [min, max] = (shape as Shape3D).boundingBox.bounds
+          const tol = Math.max(0.5, 0.01 * Math.hypot(...[0, 1, 2].map((k) => pick.check!.max[k] - pick.check!.min[k])))
+          const off = [0, 1, 2].some((k) => Math.abs(min[k] - pick.check!.min[k]) > tol || Math.abs(max[k] - pick.check!.max[k]) > tol)
+          if (off) throw new Error(`「${pick.name}」的實體與畫面上的網格位置對不上，無法依結構拆開`)
+        }
+      }
+      const placed = placeShape(shape, pick.matrix)
+      created.push(placed)
+      const blob = exportSTEP([{ shape: placed, name: pick.name, color: pick.color }], { unit: 'MM' })
+      out.push(new Uint8Array(await blob.arrayBuffer()))
+    }
+    return out
+  } finally {
+    for (const s of created) s.delete()
+    reader.delete()
+    try {
+      oc.FS.unlink(file)
+    } catch {
+      /* 已刪除 */
+    }
+  }
+}
+
 export async function buildAssemblyStep(
   files: ReadonlyMap<string, Uint8Array>,
   parts: readonly StepPart[],
@@ -114,12 +198,7 @@ export async function buildAssemblyStep(
         bases.set(part.source, base)
       }
       // replicad 的轉換會刪除原本的形狀：先複製
-      let shape = base.clone()
-      const { axis, angle } = rotationAxisAngle(part.matrix)
-      if (angle > 1e-9) shape = shape.rotate((angle * 180) / Math.PI, [0, 0, 0], axis)
-      const m = part.matrix
-      if (Math.abs(m[12]) + Math.abs(m[13]) + Math.abs(m[14]) > 0) shape = shape.translate([m[12], m[13], m[14]])
-      placed.push({ shape, name: part.name, color: part.color })
+      placed.push({ shape: placeShape(base.clone(), part.matrix), name: part.name, color: part.color })
       onProgress?.(i + 1, total)
     }
     for (const [i, tube] of tubes.entries()) {

@@ -221,6 +221,23 @@ function TestHook() {
         return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height }
       },
       state: () => useModuleStore.getState(),
+      transforms: () => {
+        const { doc, products } = useModuleStore.getState()
+        return computeTransforms(doc, products).transforms
+      },
+      /** 每個零件的外框（模組座標）：[min, max] */
+      boxes: () => {
+        const { doc, products, meshes } = useModuleStore.getState()
+        const { transforms } = computeTransforms(doc, products)
+        return Object.fromEntries(
+          doc.instances.flatMap((i) => {
+            const mesh = meshes[products[i.productId]?.source.sha256 ?? '']
+            if (!mesh || !transforms[i.id]) return []
+            const box = new Box3(new Vector3(...mesh.bbox.min), new Vector3(...mesh.bbox.max)).applyMatrix4(new Matrix4().fromArray(transforms[i.id]))
+            return [[i.id, [box.min.toArray(), box.max.toArray()]]]
+          }),
+        )
+      },
     }
     return () => {
       delete w.__pneumatic3d
