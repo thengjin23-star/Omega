@@ -92,6 +92,8 @@ export interface IllustrationInfo {
   positions?: Record<string, [number, number]>
   /** 圖片下方加上模組名稱、客戶與日期 */
   footer?: boolean
+  /** 爆炸圖：鎖合的零件沿接口方向拉開的距離（mm），並畫出裝配線；0 或未設定 = 組好的樣子 */
+  explode?: number
 }
 
 export interface ModuleDoc {

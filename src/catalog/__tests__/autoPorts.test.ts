@@ -49,14 +49,16 @@ describe('autoPorts：從 3D 模型自動找埠（範例零件）', () => {
     it(`${file}：位置、方向、規格與名稱`, async () => {
       const r = await detect(file)
       const expected = pipingPorts(file)
-      expect(r.ports.map((p) => `${p.name}:${p.spec && formatSpecShort(p.spec)}`)).toHaveLength(expected.length)
+      const pipes = r.ports.filter((p) => p.spec?.kind !== 'interface')
+      expect(pipes.map((p) => `${p.name}:${p.spec && formatSpecShort(p.spec)}`)).toHaveLength(expected.length)
       for (const e of expected) {
-        const p = found(r.ports, e)
+        const p = found(pipes, e)
         expect(p, `${file} ${e.name} ${e.spec}`).toBeDefined()
         expect(p!.name).toBe(e.name)
         expect(p!.detected?.auto).toBe(true)
+        expect(p!.detected?.basis).toMatch(/依直徑/)
       }
-      expect(r.ports.map((p) => p.name).sort()).toEqual([...names].sort())
+      expect(pipes.map((p) => p.name).sort()).toEqual([...names].sort())
     })
   }
 
@@ -82,6 +84,18 @@ describe('autoPorts：從 3D 模型自動找埠（範例零件）', () => {
     expect(side('B').size).toBe(1)
     // 站位中間的 Ø5 孔：列為「可能」，不自動加入
     expect(r.maybe.length).toBeGreaterThan(0)
+  })
+
+  it('固定螺絲孔：小的貫穿孔列為固定孔（畫面上標出），不當成埠', async () => {
+    const r = await detect('DEMO-VALVE-52-01.step')
+    // 閥身兩端各一個 Ø3.4 貫穿孔（裝集裝座用），兩端孔口都標
+    expect(r.fixing.map((c) => [Math.round(c.diameter * 10) / 10, c.through, Math.round(c.origin[0])]).sort()).toEqual([
+      [3.4, true, -21],
+      [3.4, true, -21],
+      [3.4, true, 21],
+      [3.4, true, 21],
+    ])
+    expect(r.ports.some((p) => Math.abs(Math.abs(p.frame.origin[0]) - 21) < 0.5)).toBe(false)
   })
 
   it('調壓閥：IN／OUT 與壓力錶', async () => {

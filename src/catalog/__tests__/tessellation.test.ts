@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { detectCadFormat, readCad } from '../cad'
-import { deserializeTessellation, faceOfTriangle, serializeTessellation } from '../tessellation'
+import { deserializeTessellation, faceOfTriangle, serializeTessellation, topLevelGroups } from '../tessellation'
 import { nodeOcct, readSample, sampleManifest } from './nodeHelpers'
 
 const load = async (file: string) => readCad(await nodeOcct(), await readSample(file), 'step')
@@ -30,6 +30,27 @@ describe('讀取 STEP（occt-import-js）', () => {
     expect(t.bbox.min[2]).toBeCloseTo(0, 1)
     // 本體頂面 z = 26，線圈上的接線盒到 z = 26 × 1.47
     expect(t.bbox.max[2]).toBeCloseTo(38.22, 1)
+  })
+
+  it('記下 STEP 的頂層零件（名稱與網格）：單一零件也可能有好幾個實體', async () => {
+    const t = await load('DEMO-VALVE-52-01.step')
+    expect(t.groups).toEqual([
+      { name: 'BODY', parts: [0] },
+      { name: 'SOLENOID', parts: [1] },
+      { name: 'SOLENOID-CONNECTOR', parts: [2] },
+      { name: 'MANUAL', parts: [3] },
+    ])
+    expect(deserializeTessellation(serializeTessellation(t)).groups).toEqual(t.groups)
+  })
+
+  it('topLevelGroups：往下走過只有一個子節點的包裝層；子節點底下的網格都算進去', () => {
+    const tree = { name: '', children: [{ name: 'ASM', children: [{ name: 'A', meshes: [0, 1] }, { name: 'B', children: [{ name: 'B1', meshes: [2] }] }] }] }
+    expect(topLevelGroups(tree, 3)).toEqual([
+      { name: 'A', parts: [0, 1] },
+      { name: 'B', parts: [2] },
+    ])
+    expect(topLevelGroups(undefined, 2)).toEqual([{ name: '', parts: [0, 1] }])
+    expect(topLevelGroups({ name: 'ONE', meshes: [0] }, 1)).toEqual([{ name: 'ONE', parts: [0] }])
   })
 
   it('faceOfTriangle 以二分搜尋找到三角形所屬的面', async () => {

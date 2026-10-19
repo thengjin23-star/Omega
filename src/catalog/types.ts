@@ -34,8 +34,11 @@ export interface ProductPort {
    * 這個埠由集裝座供氣／排氣，不必另外接管；沒有裝在集裝座上時，可以直接接接頭或消音器。
    */
   sealedBy?: string
-  /** 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（使用者還沒確認） */
-  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean }
+  /**
+   * 由 3D 模型自動量測到的資訊；auto = 匯入時自動找到（推測，使用者還沒確認）；
+   * basis = 怎麼判斷的（例如「孔 Ø8.6 → Rc1/8；名稱依位置推測」）
+   */
+  detected?: { shape: 'hole' | 'boss' | 'plane'; diameter?: number; auto?: boolean; basis?: string }
 }
 
 export type ProductCategory =
@@ -105,6 +108,11 @@ export interface Product {
   notes?: string
   /** 通用 3D：系統依尺寸產生的示意模型（不是原廠 3D 檔），記下規格以便沿用 */
   generic?: GenericSpec
+  /**
+   * 從 STEP 組立檔取出的零件：原本那個產品的原始檔 sha256。
+   * 同一個組立檔再匯入一次時，用它認出已經取出過的零件，不會重複建立。
+   */
+  derivedFrom?: string
   createdAt: number
   updatedAt: number
 }

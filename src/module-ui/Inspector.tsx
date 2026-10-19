@@ -2,11 +2,14 @@ import { useMemo, useState } from 'react'
 import { bomColumns, bomTotal, buildBom } from '../assembly/bom'
 import { formatMoney } from '../utils/money'
 import { suggestPartners } from '../assembly/memory'
+import { mateHints } from '../assembly/mateHints'
+import { copyUnit, freeMountPorts } from '../assembly/unitClipboard'
 import { attachmentBranches } from '../assembly/copyAttachments'
-import { estimateTubeLengthOf, getPort, mateChecks, mateRotation, usedPorts } from '../assembly/moduleOps'
+import { estimateTubeLengthOf, getPort, groupOf, mateChecks, mateRotation, parentMateOf, rootPose, usedPorts } from '../assembly/moduleOps'
 import { useLibraryStore } from '../catalog/library'
 import { effectivePneumatic, isCircuitType, pneumaticTypeLabel } from '../catalog/pneumatic'
 import { CATEGORY_LABEL, hasModel, productLabel, type Product, type ProductCategory } from '../catalog/types'
+import { PORT_ROLE_COLOR, PORT_ROLE_LABEL, portRole } from '../catalog/portRoles'
 import { PneumaticFunctionDialog } from '../components/PneumaticFunctionEditor'
 import { SymbolPreview } from '../components/SymbolPreview'
 import { formatSpec, type MateLevel } from '../threads'
@@ -157,6 +160,7 @@ function PartTab() {
   return (
     <div className="space-y-4 p-3">
       <ProductForm key={product.id} product={product} />
+      <PoseSection instanceId={inst.id} />
       <PneumaticSection product={product} />
       <SignalSection key={inst.id} instanceId={inst.id} product={product} />
       <MotionSection product={product} />
@@ -187,11 +191,207 @@ function PartTab() {
           ))}
         </ul>
       </section>
+      <MateHintsSection instanceId={inst.id} />
       <PartActions instanceId={inst.id} product={product} />
       <Button variant="danger" size="sm" onClick={removeSelected}>
         從模組移除這個零件
       </Button>
     </div>
+  )
+}
+
+/** 數字輸入：離開或按 Enter 時套用；外部的值改變（例如復原）時更新 */
+function NumberField({ label, value, unit, onCommit, step = 1 }: { label: string; value: number; unit: string; onCommit: (v: number) => void; step?: number }) {
+  const shown = Math.round(value * 100) / 100
+  return (
+    <label className="flex min-w-0 items-center gap-0.5 text-xs text-slate-500">
+      <span className="shrink-0 font-medium text-slate-600">{label}</span>
+      <input
+        key={shown}
+        type="number"
+        step={step}
+        defaultValue={shown}
+        aria-label={`${label} ${unit}`}
+        className="h-7 w-full min-w-0 rounded border border-slate-300 bg-white px-1 text-right text-xs text-slate-800"
+        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        onBlur={(e) => {
+          const v = Number(e.currentTarget.value)
+          if (Number.isFinite(v) && Math.abs(v - shown) > 1e-9) onCommit(v)
+          else e.currentTarget.value = String(shown)
+        }}
+      />
+    </label>
+  )
+}
+
+const POSE_AXES = ['x', 'y', 'z'] as const
+
+/**
+ * 位置與方向：
+ * - 沒有鎖合在別的零件上（根零件）：直接輸入位置／轉角、按鈕轉 90°、恢復原始方向；接在它上面的零件一起動
+ * - 鎖合在別的零件上：只能繞接口軸轉（鎖合角度），或拆開後自由移動；也可以整組一起轉
+ */
+function PoseSection({ instanceId }: { instanceId: string }) {
+  const doc = useModuleStore((s) => s.doc)
+  const products = useModuleStore((s) => s.products)
+  const meshes = useModuleStore((s) => s.meshes)
+  const gizmo = useModuleStore((s) => s.gizmo)
+  const { setGizmo, rotateSelected, setSelectedPose, resetSelectedRotation, rotateMate, disconnectMate } = useModuleStore.getState()
+  const inst = doc.instances.find((i) => i.id === instanceId)
+  const mesh = inst && meshes[products[inst.productId]?.source.sha256 ?? '']
+  const mate = parentMateOf(doc, instanceId)
+  const group = groupOf(doc, instanceId).size
+  if (!inst || !mesh) return null
+  const local = mesh.bbox.min.map((v, k) => (v + mesh.bbox.max[k]) / 2) as Vec3
+  const pose = rootPose(doc.placements[instanceId], local)
+  const gizmoButtons = (
+    <span className="flex gap-1">
+      {(['move', 'rotate'] as const).map((g) => (
+        <Button
+          key={g}
+          size="sm"
+          variant={gizmo === g ? 'primary' : 'default'}
+          onClick={() => setGizmo(gizmo === g ? undefined : g)}
+          title={g === 'move' ? '在 3D 畫面拖曳箭頭移動（快捷鍵 M）' : '在 3D 畫面拖曳圓環旋轉，每格 15°（快捷鍵 R）'}
+        >
+          {g === 'move' ? '拖曳移動' : '拖曳旋轉'}
+        </Button>
+      ))}
+    </span>
+  )
+  const quickTurns = (
+    <div className="space-y-1">
+      {POSE_AXES.map((axis) => (
+        <div key={axis} className="flex items-center gap-1 text-xs">
+          <span className="w-10 shrink-0 text-slate-500">繞 {axis.toUpperCase()}</span>
+          {[-90, 90, 180].map((d) => (
+            <Button key={d} size="sm" onClick={() => rotateSelected(axis, d)} aria-label={`繞 ${axis.toUpperCase()} 轉 ${d}°`}>
+              {d > 0 ? `+${d}°` : `${d}°`}
+            </Button>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
+  if (mate) {
+    const rotation = mateRotation(getPort(doc, products, mate.parent), getPort(doc, products, mate.child))
+    const steps = rotation === 'fixed' ? [] : rotation === 'free' ? [-90, -15, 15, 90] : [360 / rotation.steps]
+    return (
+      <section className="space-y-2 rounded-md border border-slate-200 p-2" aria-label="位置與方向">
+        <header className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-700">位置與方向</h3>
+          {gizmoButtons}
+        </header>
+        <p className="text-xs leading-5 text-slate-600">
+          鎖合在 <strong>{portLabel(doc, products, mate.parent)}</strong> 上：位置由鎖合決定。
+        </p>
+        {steps.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1 text-xs">
+            <span className="mr-1 text-slate-500">繞接口轉（目前 {mate.angle}°）</span>
+            {steps.map((d) => (
+              <Button key={d} size="sm" onClick={() => rotateMate(mate.id, d)}>
+                {d > 0 ? `+${d}°` : `${d}°`}
+              </Button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-500">安裝面固定方向，不能繞接口轉。</p>
+        )}
+        <details className="text-xs">
+          <summary className="cursor-pointer text-slate-600">整組一起轉（{group} 個零件）</summary>
+          <div className="mt-1">{quickTurns}</div>
+          <p className="mt-1 text-slate-500">「拖曳移動／旋轉」也是整組一起動，鎖合不變。</p>
+        </details>
+        <Button size="sm" variant="danger" onClick={() => disconnectMate(mate.id)} title="拆開這個鎖合後，這個零件（與接在它上面的零件）可以自由移動、旋轉">
+          拆開，自由移動
+        </Button>
+      </section>
+    )
+  }
+  return (
+    <section className="space-y-2 rounded-md border border-slate-200 p-2" aria-label="位置與方向">
+      <header className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-700">位置與方向</h3>
+        {gizmoButtons}
+      </header>
+      <div className="grid grid-cols-[3.2rem_1fr_1fr_1fr] items-center gap-1" data-pose-center={pose.center.map((v) => v.toFixed(2)).join(',')}>
+        <span className="text-xs text-slate-500">位置 mm</span>
+        {POSE_AXES.map((axis, k) => (
+          <NumberField
+            key={axis}
+            label={axis.toUpperCase()}
+            unit="mm"
+            value={pose.center[k]}
+            onCommit={(v) => setSelectedPose({ center: pose.center.map((c, i) => (i === k ? v : c)) as Vec3, rotation: pose.rotation })}
+          />
+        ))}
+      </div>
+      <div className="grid grid-cols-[3.2rem_1fr_1fr_1fr] items-center gap-1" data-pose-rotation={pose.rotation.join(',')}>
+        <span className="text-xs text-slate-500">轉角 °</span>
+        {POSE_AXES.map((axis, k) => (
+          <NumberField
+            key={axis}
+            label={axis.toUpperCase()}
+            unit="°"
+            step={15}
+            value={pose.rotation[k]}
+            onCommit={(v) => setSelectedPose({ center: pose.center, rotation: pose.rotation.map((r, i) => (i === k ? v : r)) as Vec3 })}
+          />
+        ))}
+      </div>
+      <p className="text-[11px] leading-4 text-slate-400">位置是零件外框中心；轉角依 X→Y→Z 順序，以外框中心為旋轉中心。</p>
+      {quickTurns}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" disabled={pose.rotation.every((r) => r === 0)} onClick={resetSelectedRotation}>
+          恢復原始方向
+        </Button>
+        {group > 1 && <span className="text-xs text-slate-500">接在它上面的 {group - 1} 個零件一起動（鎖合不變）</span>}
+      </div>
+    </section>
+  )
+}
+
+/** 接合建議：這個零件的空埠可以接到模組中哪些零件（安裝面優先）；滑鼠移上去時 3D 畫面標出對方的埠 */
+function MateHintsSection({ instanceId }: { instanceId: string }) {
+  const doc = useModuleStore((s) => s.doc)
+  const products = useModuleStore((s) => s.products)
+  const mode = useModuleStore((s) => s.mode)
+  const { clickPort, setHintPort } = useModuleStore.getState()
+  const hints = useMemo(() => mateHints(doc, products, instanceId), [doc, products, instanceId])
+  if (!hints.length || mode !== 'select') return null
+  return (
+    <section className="space-y-1.5 rounded-md border border-slate-200 p-2" aria-label="可以接到">
+      <h3 className="text-sm font-semibold text-slate-700">可以接到</h3>
+      <ul className="space-y-1" onMouseLeave={() => setHintPort(undefined)}>
+        {hints.map((h) => {
+          const fromName = getPort(doc, products, h.from)?.name
+          return (
+            <li
+              key={`${h.from.port}>${h.to.instance}:${h.to.port}`}
+              className="flex items-center justify-between gap-2 text-xs"
+              onMouseEnter={() => setHintPort(h.to)}
+              data-hint={`${fromName}>${portLabel(doc, products, h.to)}`}
+            >
+              <span className="min-w-0 truncate text-slate-600">
+                <strong className="text-slate-800">{fromName}</strong>
+                {h.mount ? '（安裝面）' : ''} → {portLabel(doc, products, h.to)}
+              </span>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setHintPort(undefined)
+                  clickPort(h.from)
+                  clickPort(h.to)
+                }}
+                title="開啟連接檢查，確認後鎖合"
+              >
+                接上
+              </Button>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }
 
@@ -204,6 +404,17 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
   const duplicateSelected = useModuleStore((s) => s.duplicateSelected)
   const [replacing, setReplacing] = useState(false)
   const applyToSameParts = useModuleStore((s) => s.applyToSameParts)
+  const splitInstance = useModuleStore((s) => s.splitInstance)
+  const mesh = useModuleStore((s) => s.meshes[product.source.sha256])
+  // STEP 有好幾個頂層零件：可以依結構拆開。一般零件也常由好幾個實體組成（本體、線圈…），所以只在
+  // 看起來是組立檔（「項次_型號」）或還沒認出種類（其他、集裝座：可能是整組閥島）時提供；舊資料沒有記下結構時有多個實體就讓使用者試
+  const groups = mesh?.groups
+  const looksAssembly = !!groups && groups.length >= 2 && groups.every((g) => /^\d+_/.test(g.name))
+  const splittable =
+    product.source.format === 'step' &&
+    !!mesh &&
+    (groups ? groups.length >= 2 : mesh.parts.length >= 2) &&
+    (looksAssembly || product.category === 'other' || product.category === 'manifold')
   // 模組中還有幾個相同的零件、這個零件上接了幾串零件（可以照樣套用）
   const same = useMemo(() => doc.instances.filter((i) => i.productId === product.id && i.id !== instanceId).length, [doc.instances, product.id, instanceId])
   const branches = useMemo(() => (same ? attachmentBranches(doc, instanceId).length : 0), [doc, instanceId, same])
@@ -231,8 +442,8 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
         <Button size="sm" onClick={() => setReplacing(true)}>
           更換零件…
         </Button>
-        <Button size="sm" onClick={() => void duplicateSelected()}>
-          複製
+        <Button size="sm" onClick={() => void duplicateSelected()} title="只複製這一個零件（不含接在上面的零件），放在旁邊">
+          複製單一零件
         </Button>
         {same > 0 && (
           <Button
@@ -248,9 +459,60 @@ function PartActions({ instanceId, product }: { instanceId: string; product: Pro
             套用到其他 {same} 個相同零件
           </Button>
         )}
+        {splittable && (
+          <Button
+            size="sm"
+            onClick={() => void splitInstance(instanceId)}
+            title="這個 STEP 檔由好幾個頂層零件組成（例如組立檔）：拆成個別零件，各自放在原本的位置。一般的多實體零件（本體＋線圈…）不用拆。"
+          >
+            依 STEP 結構拆開{mesh?.groups ? `（${mesh.groups.length}）` : ''}
+          </Button>
+        )}
       </div>
+      <UnitClipboardActions instanceId={instanceId} />
       {replacing && <ReplaceDialog instanceId={instanceId} current={product} onClose={() => setReplacing(false)} />}
     </section>
+  )
+}
+
+/** 複製／貼上一組零件（例如閥＋接頭）：貼上時裝到下一個空的同規格站位 */
+function UnitClipboardActions({ instanceId }: { instanceId: string }) {
+  const doc = useModuleStore((s) => s.doc)
+  const products = useModuleStore((s) => s.products)
+  const clipboard = useModuleStore((s) => s.clipboard)
+  const { copySelectedUnit, pasteUnit } = useModuleStore.getState()
+  const unit = useMemo(() => copyUnit(doc, products, instanceId), [doc, products, instanceId])
+  // 貼到哪個底座：選取的零件有空站就是它，否則是原本的底座
+  const free = useMemo(() => {
+    if (!clipboard?.mount) return 0
+    const here = freeMountPorts(doc, products, clipboard, instanceId).length
+    if (here) return here
+    return doc.instances.some((i) => i.id === clipboard.mount!.baseInstance) ? freeMountPorts(doc, products, clipboard, clipboard.mount.baseInstance).length : 0
+  }, [doc, products, clipboard, instanceId])
+  if (!unit) return null
+  return (
+    <div className="space-y-1.5 rounded-md bg-slate-50 p-2" aria-label="複製一組">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={copySelectedUnit} title="複製這個零件與接在它上面的零件（不含底座），快捷鍵 Ctrl+C">
+          複製這組{unit.members.length > 1 ? `（${unit.members.length} 個零件）` : ''}
+        </Button>
+        <Button size="sm" variant={clipboard ? 'primary' : 'default'} disabled={!clipboard} onClick={() => void pasteUnit()} title="貼上一組：裝到下一個空的同規格站位，快捷鍵 Ctrl+V">
+          貼上
+        </Button>
+        {free > 1 && (
+          <Button size="sm" onClick={() => void pasteUnit('all')} title="一次填滿所有空的同規格站位">
+            填滿 {free} 個空站
+          </Button>
+        )}
+      </div>
+      {clipboard && (
+        <p className="text-[11px] leading-4 text-slate-500" data-clipboard={clipboard.label}>
+          已複製：{clipboard.label}
+          {clipboard.members.length > 1 ? ` 等 ${clipboard.members.length} 個零件` : ''}
+          {clipboard.mount ? `；貼上時裝到${free ? `下一個空站（還有 ${free} 個）` : '旁邊（沒有空站）'}` : '；貼在旁邊'}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -582,10 +844,19 @@ function PortRow({ instanceId, product, portId }: { instanceId: string; product:
     <li className={`rounded-md border p-2 ${isFrom ? 'border-blue-400 bg-blue-50' : 'border-slate-200'}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ background: PORT_ROLE_COLOR[portRole(port)] }}
+            title={PORT_ROLE_LABEL[portRole(port)]}
+          />
           <span className="font-mono text-sm font-semibold text-slate-800">{port.name}</span>
           {port.detected?.auto && (
-            <span className="rounded bg-violet-100 px-1 text-[10px] text-violet-700" title="匯入時由孔徑自動判斷；確認無誤後按「全部確認」，或按「編輯」修改">
-              自動
+            <span
+              className="rounded bg-violet-100 px-1 text-[10px] text-violet-700"
+              title={`${port.detected.basis ?? '匯入時自動判斷'}。確認無誤後按「全部確認」，或按「編輯」修改`}
+              data-basis={port.detected.basis}
+            >
+              推測
             </span>
           )}
         </span>
@@ -667,7 +938,13 @@ function AutoPortsNotice({ product }: { product: Product }) {
         <div className="flex items-start justify-between gap-2">
           <span>
             {auto} 個埠是由孔徑<strong>自動判斷</strong>的：請看一下名稱與規格（PT／G 等牙型以型號為準），不對的按「編輯」修改。
-            {mount?.spec?.kind === 'interface' && <> 底面另加上「{mount.spec.key}」安裝面，P／排氣由集裝座供應。</>}
+            {mount?.spec?.kind === 'interface' && (
+              <>
+                {' '}
+                底面另加上「{mount.spec.key}」安裝面，P／排氣由集裝座供應
+                {/推測/.test(mount.detected?.basis ?? '') ? <strong>（系列是依接管口推測的，請確認）</strong> : ''}。
+              </>
+            )}
           </span>
           <Button size="sm" className="shrink-0 whitespace-nowrap" onClick={() => void confirmAutoPorts(product.id)}>
             全部確認

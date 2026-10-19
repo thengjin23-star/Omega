@@ -37,9 +37,9 @@ import { detectCadFormat } from '../catalog/cad'
 import { parseCadInWorker } from '../catalog/cadClient'
 import type { CatalogStore } from '../catalog/db'
 import { analyzeFace, proposePort, type OpenTester, type PortProposal } from '../catalog/faceAnalysis'
-import { attachCadFile, importCadFile } from '../catalog/importer'
+import { attachCadFile, createModelOnlyProduct, importCadFile } from '../catalog/importer'
 import { getCatalog, useLibraryStore } from '../catalog/library'
-import { autoPorts, toProductPort, type DetectedPort } from '../catalog/autoPorts'
+import { autoPorts, toProductPort, type DetectedPort, type PortCandidate } from '../catalog/autoPorts'
 import { decodeModelCode } from '../catalog/makerCodes'
 import { buildGenericInWorker } from '../catalog/generic/genericClient'
 import { genericFromCode, genericKey, genericMeta, type GenericSpec } from '../catalog/generic/genericParts'
@@ -47,11 +47,15 @@ import { pneumaticFromDef, portsFromDefs } from '../catalog/samples'
 import { createOpenTester, createRaycaster, type Raycaster } from '../catalog/openTester'
 import { makeFrame } from '../catalog/ports'
 import { installSamples, type SampleManifest } from '../catalog/samples'
-import { faceOfTriangle, type Tessellation } from '../catalog/tessellation'
+import { boundingBox, faceOfTriangle, type Tessellation } from '../catalog/tessellation'
 import { hasModel, productLabel, type Product, type ProductPort } from '../catalog/types'
 import { add, scale, type Vec3 } from '../geometry/vec3'
 import { checkMate, formatSpecShort, type PortSpec } from '../threads'
 import { downloadFile, safeFileName } from '../utils/download'
+import { planRestore, restoreModule } from '../assembly/stepRestore'
+import { copyUnit, freeMountPorts, pasteUnit as pasteUnitInto, type UnitClip } from '../assembly/unitClipboard'
+import { extractStepPartsInWorker } from '../drawing/stepClient'
+import { readStepMeta, type StepModuleMeta } from '../drawing/stepMeta'
 import { renderThumbnail } from './thumbnail'
 
 export type Mode = 'select' | 'define-port' | 'measure' | 'tube' | 'simulate'
@@ -114,6 +118,8 @@ export interface BuildOutcome {
 export interface Message {
   kind: 'info' | 'error'
   text: string
+  /** 訊息上的按鈕，例如「拆成 4 個零件」 */
+  action?: { label: string; run: () => void }
 }
 
 interface ModuleSummary {
@@ -127,6 +133,8 @@ interface ModuleSummary {
 interface State {
   /** 自動找埠時不確定的孔（產品 id → 候選）：屬性面板列出來讓使用者加入 */
   maybePorts: Record<string, DetectedPort[]>
+  /** 自動找埠時找到的小孔（固定孔、定位孔）：只在畫面上標出，不當成埠 */
+  fixingHoles: Record<string, PortCandidate[]>
   status: 'loading' | 'ready' | 'error'
   error?: string
   products: Record<string, Product>
@@ -200,8 +208,39 @@ interface State {
   attachMany(list: { at: PortRef; productId: string; portId: string }[]): Promise<void>
   /** 更換零件的產品，盡量保留原本的鎖合 */
   replaceInstanceProduct(instanceId: string, productId: string): Promise<void>
+  /** 接合建議：滑鼠移到建議上時，3D 畫面標出對方的埠 */
+  hintPort?: PortRef
+  setHintPort(ref: PortRef | undefined): void
+  /** 3D 畫面上的操作把手：拖曳移動或旋轉選取的零件 */
+  gizmo?: 'move' | 'rotate'
+  /** 拖曳操作把手時，開始拖曳前的模組（結束時記一步復原） */
+  transformStart?: ModuleDoc
+  setGizmo(gizmo: 'move' | 'rotate' | undefined): void
+  /** 選取的零件繞自己的外框中心旋轉（模組的 X／Y／Z 軸，度）；鎖合在別的零件上時整組一起轉 */
+  rotateSelected(axis: 'x' | 'y' | 'z', deg: number): void
+  /** 選取的零件平移（mm）；鎖合在別的零件上時整組一起動 */
+  moveSelected(delta: Vec3): void
+  /** 根零件：直接輸入位置（外框中心，mm）與方向（依 X→Y→Z 的轉角，度） */
+  setSelectedPose(pose: { center: Vec3; rotation: Vec3 }): void
+  /** 根零件：恢復零件檔本身的方向（外框中心不動） */
+  resetSelectedRotation(): void
+  /** 拖曳操作把手：開始、預覽（不記入復原）、結束（整個拖曳記一步復原） */
+  beginTransform(): void
+  previewTransform(delta: number[]): void
+  endTransform(): void
   /** 複製選取的零件（不含鎖合） */
   duplicateSelected(): Promise<void>
+  /** 複製的一組零件（Ctrl+C）：例如閥＋接在閥上的接頭；貼上時裝到下一個空的同規格站位 */
+  clipboard?: UnitClip & { label: string }
+  /** 複製選取的零件與接在它上面的零件（不含底座） */
+  copySelectedUnit(): void
+  /** 貼上：count 組（'all' = 填滿底座所有空的同規格站位）；選取的零件是有空站的底座時貼到它上面 */
+  pasteUnit(count?: number | 'all'): Promise<void>
+  /**
+   * 依 STEP 檔的結構把一個零件拆成數個零件（例如其他 CAD 存的組立檔、舊版匯出的模組 STEP）：
+   * 每個頂層零件建立一個產品，放在原本的位置
+   */
+  splitInstance(instanceId: string): Promise<void>
   removeSelected(): void
   deleteProduct(productId: string): Promise<void>
   updateProduct(product: Product): Promise<void>
@@ -292,6 +331,29 @@ let initPromise: Promise<void> | undefined
 const testers = new Map<string, OpenTester>()
 const raycasters = new Map<string, Raycaster>()
 const LAST_MODULE_KEY = 'pneumatic-module:last'
+/** 24 個 90° 倍數的旋轉（column-major 3×3，包含不轉）：比對組立檔中朝不同方向的同一個零件 */
+const AXIS_ROTATIONS: number[][] = (() => {
+  const out: number[][] = []
+  const perms = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+  ]
+  for (const p of perms)
+    for (let signs = 0; signs < 8; signs++) {
+      const m = new Array(9).fill(0)
+      // 第 c 行（column）是新座標的第 c 軸在原座標中的方向
+      for (let c = 0; c < 3; c++) m[c * 3 + p[c]] = signs & (1 << c) ? -1 : 1
+      const det = m[0] * (m[4] * m[8] - m[7] * m[5]) - m[3] * (m[1] * m[8] - m[7] * m[2]) + m[6] * (m[1] * m[5] - m[4] * m[2])
+      if (det > 0) out.push(m)
+    }
+  // 不轉排第一個
+  return out.sort((a, b) => Number(b[0] === 1 && b[4] === 1 && b[8] === 1) - Number(a[0] === 1 && a[4] === 1 && a[8] === 1))
+})()
+
 const HISTORY_LIMIT = 100
 
 const summarize = (m: ModuleDoc): ModuleSummary => ({
@@ -514,6 +576,38 @@ export const useModuleStore = create<State>()((set, get) => {
   }
 
   /** 新零件放在目前模組的右側、底面貼齊 z = 0 */
+  /** 零件自己座標中的外框中心 */
+  const localCenterOf = (instanceId: string): Vec3 | undefined => {
+    const { doc, products, meshes } = get()
+    const inst = doc.instances.find((i) => i.id === instanceId)
+    const mesh = inst && meshes[products[inst.productId]?.source.sha256 ?? '']
+    return mesh && (mesh.bbox.min.map((v, k) => (v + mesh.bbox.max[k]) / 2) as Vec3)
+  }
+
+  /** 零件外框中心在模組中的位置（旋轉的中心） */
+  const worldCenterOf = (instanceId: string): Vec3 | undefined => {
+    const local = localCenterOf(instanceId)
+    if (!local) return undefined
+    const { doc, products } = get()
+    const world = ops.computeTransforms(doc, products).transforms[instanceId]
+    return world && (new Vector3(...local).applyMatrix4(new Matrix4().fromArray(world)).toArray() as Vec3)
+  }
+
+  /** 貼在旁邊（不與其他零件重疊）：保持 world 的方向，往 +X 放在所有零件的右邊 */
+  const placementBesideMatrix = (world: number[], productId: string): number[] => {
+    const { doc, products, meshes } = get()
+    const mesh = meshes[products[productId]?.source.sha256 ?? '']
+    const { transforms } = ops.computeTransforms(doc, products)
+    const all = new Box3()
+    for (const inst of doc.instances) {
+      const m = meshes[products[inst.productId]?.source.sha256 ?? '']
+      if (m && transforms[inst.id]) all.union(new Box3(new Vector3(...m.bbox.min), new Vector3(...m.bbox.max)).applyMatrix4(new Matrix4().fromArray(transforms[inst.id])))
+    }
+    const own = mesh ? new Box3(new Vector3(...mesh.bbox.min), new Vector3(...mesh.bbox.max)).applyMatrix4(new Matrix4().fromArray(world)) : undefined
+    const dx = all.isEmpty() || !own ? 0 : all.max.x + 30 - own.min.x
+    return new Matrix4().makeTranslation(dx, 0, 0).multiply(new Matrix4().fromArray(world)).toArray()
+  }
+
   const placementBeside = (mesh: Tessellation): number[] => {
     const { doc, products, meshes } = get()
     const { transforms } = ops.computeTransforms(doc, products)
@@ -584,8 +678,78 @@ export const useModuleStore = create<State>()((set, get) => {
       return `已加入「${next.modelCode}」，但模型上沒有找到埠（可能沒有畫出孔）。${maybe}請按「新增埠」點選位置，或在產品庫用「產生通用 3D」。`
     const ports = r.added.filter((p) => p.spec?.kind !== 'interface')
     const mounts = r.added.filter((p) => p.spec?.kind === 'interface')
-    const mount = mounts.length ? `另依型號加上「${mounts.map((p) => formatSpecShort(p.spec!)).join('、')}」安裝面，可以直接裝到集裝座。` : ''
+    const guessed = mounts.some((p) => /推測/.test(p.detected?.basis ?? ''))
+    const mount = mounts.length
+      ? `另${guessed ? '依底面的 P／排氣口推測' : '依型號'}加上「${mounts.map((p) => formatSpecShort(p.spec!)).join('、')}」安裝面，可以直接裝到集裝座${guessed ? '（系列是推測的，請確認）' : ''}。`
+      : ''
     return `已加入「${next.modelCode}」${next.name ? `（${next.name}）` : ''}：自動找到 ${ports.length} 個埠 — ${describePorts(ports)}。${mount}請在右側確認，名稱或規格不對可以直接改。${maybe}`
+  }
+
+  /** 本程式匯出的 STEP：依檔案裡的模組資料還原成新的模組（零件、位置、鎖合與匯出前相同） */
+  const restoreFromStep = async (meta: StepModuleMeta, bytes: Uint8Array) => {
+    const all = Object.values(get().products)
+    const plan = planRestore(meta, {
+      bySha: (sha) => all.find((p) => hasModel(p) && (p.source.sha256 === sha || p.derivedFrom === sha)),
+      modelOnly: (code) => all.find((p) => !hasModel(p) && normalizeCode(p.modelCode) === normalizeCode(code)),
+    })
+    const local: Record<string, Product> = { ...plan.reuse }
+    const now = Date.now()
+    const fromMeta = (p: Product): Partial<Product> => ({
+      modelCode: p.modelCode,
+      name: p.name,
+      category: p.category,
+      ports: p.ports,
+      ...(p.pneumatic && { pneumatic: p.pneumatic }),
+      ...(p.maker && { maker: p.maker }),
+      ...(p.series && { series: p.series }),
+      ...(p.price !== undefined && { price: p.price }),
+      ...(p.notes && { notes: p.notes }),
+      ...(p.generic && { generic: p.generic }),
+    })
+    if (plan.extract.length) {
+      set({ busy: `從 STEP 取出 ${plan.extract.length} 個產品庫沒有的零件…（第一次使用需下載 STEP 處理元件）` })
+      const files = await extractStepPartsInWorker(
+        bytes,
+        plan.extract.map((e) => ({ root: e.root, matrix: e.matrix, name: meta.products[e.productId].modelCode, color: meta.colors?.[e.productId] })),
+      )
+      for (const [k, e] of plan.extract.entries()) {
+        const original = meta.products[e.productId]
+        const { product } = await importCadFile(catalog!, `${safeFileName(original.modelCode || 'part')}.step`, files[k], parseCadInWorker)
+        const next: Product = { ...product, ...fromMeta(original), derivedFrom: original.source.sha256, updatedAt: now }
+        await catalog!.putProduct(next)
+        local[e.productId] = next
+      }
+    }
+    for (const id of plan.modelOnly) {
+      const original = meta.products[id]
+      const created = await createModelOnlyProduct(catalog!, { modelCode: original.modelCode, category: original.category })
+      const next: Product = { ...created, ...fromMeta(original), updatedAt: now }
+      await catalog!.putProduct(next)
+      local[id] = next
+    }
+    const r = restoreModule(meta, local)
+    await catalog!.putModule(r.doc)
+    await refreshProducts()
+    set({ modules: (await catalog!.listModules()).map(summarize).sort((a, b) => b.updatedAt - a.updatedAt) })
+    await get().openModule(r.doc.id)
+    void generateThumbs(Object.values(local).map((p) => get().products[p.id]).filter((p): p is Product => !!p))
+    const notes = [
+      plan.extract.length ? `${plan.extract.length} 個產品庫沒有的零件已從 STEP 建立` : '',
+      r.pinned ? `${r.pinned} 個零件因為產品的埠和匯出時不同，改成固定在原位置` : '',
+      r.skipped ? `${r.skipped} 個零件沒有 3D 資料，無法還原` : '',
+      r.droppedTubes ? `${r.droppedTubes} 條 PU 管接不上，已略過` : '',
+    ].filter(Boolean)
+    set({ busy: undefined })
+    info(
+      `已從 STEP 還原模組「${r.doc.name}」：${r.doc.instances.length} 個零件、${r.doc.mates.length} 個鎖合，位置與匯出前相同（開成新的模組，原本的模組不受影響）。${notes.length ? notes.join('；') + '。' : ''}`,
+    )
+  }
+
+  /** 匯入的 STEP 有好幾個頂層零件：訊息加上「拆開」的按鈕（一般零件也常有多個實體，不自動拆） */
+  const splitOffer = (product: Product, mesh: Tessellation | undefined, instanceId: string): Message['action'] | undefined => {
+    const groups = mesh?.groups ?? []
+    if (groups.length < 2 || !hasModel(product) || product.source.format !== 'step') return undefined
+    return { label: `拆成 ${groups.length} 個零件`, run: () => void get().splitInstance(instanceId) }
   }
 
   /** 清單上找不到、或沒有 3D 檔的型號：依型號規則（或 AI）產生通用 3D */
@@ -722,6 +886,7 @@ export const useModuleStore = create<State>()((set, get) => {
     seq: SEQUENCER_IDLE,
     sequenceOpen: false,
     maybePorts: {},
+    fixingHoles: {},
 
     init() {
       initPromise ??= initialize()
@@ -753,15 +918,35 @@ export const useModuleStore = create<State>()((set, get) => {
             })
             continue
           }
-          if (!detectCadFormat(file.name)) throw new Error(`不支援的檔案：${file.name}（請使用 STEP、IGES，或 .plib／.pmod）`)
+          const format = detectCadFormat(file.name)
+          if (!format) throw new Error(`不支援的檔案：${file.name}（請使用 STEP、IGES，或 .plib／.pmod）`)
+          const bytes = await readFile(file)
+          // 本程式匯出的模組 STEP：還原成個別的零件與鎖合，而不是當成一個零件
+          const meta = format === 'step' ? readStepMeta(bytes) : undefined
+          if (meta) {
+            set({ busy: `從 STEP 還原模組「${meta.module.name}」…` })
+            await restoreFromStep(meta, bytes)
+            continue
+          }
           set({ busy: `解析 ${file.name}…（第一次使用需下載 3D 解析元件）` })
-          const { product, status } = await importCadFile(catalog!, file.name, await readFile(file), parseCadInWorker)
+          const { product, status } = await importCadFile(catalog!, file.name, bytes, parseCadInWorker)
           await refreshProducts()
           const text = status === 'new' ? await detectOnImport(product) : `已認出「${productLabel(product)}」，沿用 ${product.ports.length} 個已定義的埠。`
           await addInstanceOf(get().products[product.id])
           void generateThumbs([get().products[product.id]])
           set({ busy: undefined })
-          info(text)
+          // 看起來是組立檔（本程式舊版匯出的「項次_型號」）：訊息直接提供「拆開」；
+          // 其他多實體的檔案（一般零件常見：本體、線圈…）不打擾，需要時在右側按「依 STEP 結構拆開」
+          const mesh = get().meshes[product.source.sha256]
+          const looksAssembly = (mesh?.groups ?? []).length >= 2 && mesh!.groups!.every((g) => /^\d+_/.test(g.name))
+          const action = looksAssembly ? splitOffer(product, mesh, get().selected ?? '') : undefined
+          set({
+            message: {
+              kind: 'info',
+              text: action ? `${text} 這個檔案有 ${mesh!.groups!.length} 個頂層零件，看起來是組立檔（例如舊版匯出的模組）：要分開操作時按「${action.label}」。` : text,
+              ...(action && { action }),
+            },
+          })
         } catch (err) {
           fail(err)
         }
@@ -1011,6 +1196,111 @@ export const useModuleStore = create<State>()((set, get) => {
       }
     },
 
+    setGizmo(gizmo) {
+      set({ gizmo })
+    },
+
+    setHintPort(hintPort) {
+      set({ hintPort })
+    },
+
+    rotateSelected(axis, deg) {
+      const { selected, doc, products } = get()
+      const center = selected && worldCenterOf(selected)
+      if (!selected || !center) return
+      commit(ops.transformGroup(doc, products, selected, ops.rotationAbout(axis, deg, center)))
+    },
+
+    moveSelected(delta) {
+      const { selected, doc, products } = get()
+      if (!selected || !doc.instances.some((i) => i.id === selected)) return
+      commit(ops.transformGroup(doc, products, selected, new Matrix4().makeTranslation(...delta).toArray()))
+    },
+
+    setSelectedPose(pose) {
+      const { selected, doc } = get()
+      const local = selected && localCenterOf(selected)
+      if (!selected || !local || ops.parentMateOf(doc, selected)) return
+      commit(ops.setPlacement(doc, selected, ops.placementFromPose(pose, local)))
+    },
+
+    resetSelectedRotation() {
+      const { selected, doc } = get()
+      const local = selected && localCenterOf(selected)
+      if (!selected || !local || ops.parentMateOf(doc, selected)) return
+      const { center } = ops.rootPose(doc.placements[selected], local)
+      commit(ops.setPlacement(doc, selected, ops.placementFromPose({ center, rotation: [0, 0, 0] }, local)))
+    },
+
+    beginTransform() {
+      set({ transformStart: get().doc })
+    },
+
+    previewTransform(delta) {
+      const { transformStart, selected, products } = get()
+      if (!transformStart || !selected) return
+      set({ doc: ops.transformGroup(transformStart, products, selected, delta) })
+    },
+
+    endTransform() {
+      const { transformStart, doc } = get()
+      if (!transformStart) return
+      set({ transformStart: undefined, doc: transformStart })
+      if (doc !== transformStart) commit(doc)
+    },
+
+    copySelectedUnit() {
+      const { selected, doc, products } = get()
+      if (!selected) return
+      const clip = copyUnit(doc, products, selected)
+      if (!clip) return
+      // 訊號名稱不複製（避免重複），開始模擬時會自動指定
+      const members = clip.members.map((m) => {
+        const params = Object.fromEntries(Object.entries(m.params ?? {}).filter(([k]) => !SIGNAL_PARAM_NAMESPACE[k] && k !== 'trigger'))
+        return { productId: m.productId, ...(Object.keys(params).length && { params }) }
+      })
+      const label = productLabel(products[clip.members[0].productId])
+      set({ clipboard: { ...clip, members, label } })
+      const others = clip.members.length - 1
+      const free = clip.mount ? freeMountPorts(doc, products, clip, clip.mount.baseInstance).length : 0
+      info(
+        `已複製「${label}」${others ? `與接在上面的 ${others} 個零件` : ''}。按 Ctrl+V（或右側「貼上」）${clip.mount ? `裝到下一個空站（還有 ${free} 個）` : '貼在旁邊'}。`,
+      )
+    },
+
+    async pasteUnit(count = 1) {
+      const { clipboard: clip, selected, products } = get()
+      if (!clip) return
+      try {
+        for (const m of clip.members) await ensureMesh(products[m.productId])
+        let doc = get().doc
+        // 選取的是有空站的底座（例如另一個集裝座）：貼到它上面
+        const base = selected && freeMountPorts(doc, products, clip, selected).length ? selected : undefined
+        const baseId = base ?? (clip.mount && doc.instances.some((i) => i.id === clip.mount!.baseInstance) ? clip.mount.baseInstance : undefined)
+        const free = baseId ? freeMountPorts(doc, products, clip, baseId).length : 0
+        const times = count === 'all' ? Math.max(1, free) : count
+        const placed: string[] = []
+        let last: string | undefined
+        for (let k = 0; k < times; k++) {
+          const r = pasteUnitInto(doc, products, clip, { base, freePlacement: placementBesideMatrix(clip.world, clip.members[0].productId) })
+          if (!r) throw new Error('貼不上：複製的零件已不在產品庫，或接口已改變')
+          doc = r.doc
+          last = r.instances[0]
+          placed.push(r.mountedOn ? (ops.getPort(doc, products, r.mountedOn)?.name ?? '') : '旁邊')
+        }
+        commit(doc)
+        set({ selected: last })
+        const mounted = placed.filter((p) => p !== '旁邊')
+        info(
+          mounted.length
+            ? `已貼上 ${placed.length} 組「${clip.label}」：裝在 ${mounted.join('、')}${placed.length > mounted.length ? '；沒有空站的放在旁邊' : ''}。每組都是獨立的零件，可以個別調整。`
+            : `已貼上「${clip.label}」${clip.mount ? '（底座沒有空的同規格站位，放在旁邊）' : '，放在旁邊'}。`,
+        )
+      } catch (err) {
+        fail(err)
+      }
+    },
+
     async duplicateSelected() {
       const { selected, doc, products } = get()
       const inst = doc.instances.find((i) => i.id === selected)
@@ -1020,6 +1310,113 @@ export const useModuleStore = create<State>()((set, get) => {
         // 負載等參數一起複製；訊號名稱不複製（避免重複），開始模擬時會自動指定
         const params = Object.fromEntries(Object.entries(inst.params ?? {}).filter(([k]) => !SIGNAL_PARAM_NAMESPACE[k] && k !== 'trigger'))
         await addInstanceOf(product, Object.keys(params).length ? params : undefined)
+      } catch (err) {
+        fail(err)
+      }
+    },
+
+    async splitInstance(instanceId) {
+      const { doc, products } = get()
+      const inst = doc.instances.find((i) => i.id === instanceId)
+      const product = inst && products[inst.productId]
+      if (!inst || !product || !hasModel(product)) return
+      try {
+        if (product.source.format !== 'step') throw new Error('只有 STEP 檔可以依結構拆開')
+        const file = await catalog!.getFile(product.source.sha256)
+        if (!file) throw new Error('找不到這個零件的原始 STEP 檔')
+        set({ busy: '依 STEP 結構拆開零件…（第一次使用需下載 STEP 處理元件）' })
+        // 舊資料沒有記下頂層結構：重新解析一次
+        let mesh = await ensureMesh(product)
+        if (!mesh?.groups) mesh = await parseCadInWorker(file.bytes, 'step')
+        const parts = mesh.parts
+        const groups = mesh.groups ?? []
+        if (groups.length < 2) {
+          set({ busy: undefined })
+          info('這個檔案只有一個頂層零件，不能再拆。')
+          return
+        }
+        // 本程式舊版匯出的組立檔：名稱是「項次_型號（_序號）」
+        const ours = groups.every((g) => /^\d+_/.test(g.name))
+        const baseName = (name: string, k: number) => (ours ? name.replace(/^\d+_/, '').replace(/_\d+$/, '') : name) || `${product.modelCode}-${k + 1}`
+        const boxes = groups.map((g) => boundingBox(g.parts.map((i) => parts[i])))
+        const centers = boxes.map((b) => b.min.map((v, i) => (v + b.max[i]) / 2) as Vec3)
+        // 同名、形狀相同只差位置或 90° 倍數方向的零件（例如並排的同一款閥、朝不同方向的接頭）共用一個產品
+        const rotationTo = (a: number, b: number): number[] | undefined => {
+          const ga = groups[a].parts
+          const gb = groups[b].parts
+          if (ga.length !== gb.length || ga.some((pa, k) => parts[pa].positions.length !== parts[gb[k]].positions.length)) return undefined
+          return AXIS_ROTATIONS.find((R) =>
+            ga.every((pa, k) => {
+              const A = parts[pa].positions
+              const B = parts[gb[k]].positions
+              for (let i = 0; i < A.length; i += 3) {
+                const v = [A[i] - centers[a][0], A[i + 1] - centers[a][1], A[i + 2] - centers[a][2]]
+                for (let c = 0; c < 3; c++) if (Math.abs(R[c] * v[0] + R[c + 3] * v[1] + R[c + 6] * v[2] - (B[i + c] - centers[b][c])) > 1e-3) return false
+              }
+              return true
+            }),
+          )
+        }
+        const representative: number[] = []
+        const rotations: (number[] | undefined)[] = []
+        for (const [k, g] of groups.entries()) {
+          let found = k
+          for (let j = 0; j < k && found === k; j++) {
+            if (representative[j] !== j || baseName(groups[j].name, j) !== baseName(g.name, k)) continue
+            const R = rotationTo(j, k)
+            if (R) {
+              found = j
+              rotations[k] = R
+            }
+          }
+          representative.push(found)
+        }
+        const unique = groups.map((_, k) => k).filter((k) => representative[k] === k)
+        const hex = (c: Vec3 | null) => c && `#${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('')}`
+        const files = await extractStepPartsInWorker(
+          file.bytes,
+          unique.map((k) => ({
+            solids: groups[k].parts,
+            matrix: new Matrix4().makeTranslation(-centers[k][0], -centers[k][1], -centers[k][2]).toArray(),
+            name: baseName(groups[k].name, k),
+            color: hex(parts[groups[k].parts[0]].color) ?? undefined,
+            check: { solids: parts.length, min: boxes[k].min, max: boxes[k].max },
+          })),
+        )
+        const created = new Map<number, Product>()
+        const fresh: Product[] = []
+        for (const [n, k] of unique.entries()) {
+          const name = baseName(groups[k].name, k)
+          const r = await importCadFile(catalog!, `${safeFileName(name)}.step`, files[n], parseCadInWorker)
+          const part = r.status === 'new' ? { ...r.product, modelCode: name, updatedAt: Date.now() } : r.product
+          if (r.status === 'new') {
+            await catalog!.putProduct(part)
+            fresh.push(part)
+          }
+          created.set(k, part)
+        }
+        await refreshProducts()
+        for (const p of fresh) await get().autoDetectPorts(p.id)
+        for (const p of created.values()) await ensureMesh(get().products[p.id])
+        // 原本的零件換成拆開後的零件：放在各自原本的位置（接在它上面的零件保持原位、變成獨立）
+        const world = new Matrix4().fromArray(ops.computeTransforms(doc, products).transforms[instanceId])
+        let next = ops.removeInstance(get().doc, get().products, instanceId)
+        const added: string[] = []
+        for (const [k, c] of centers.entries()) {
+          // 共用產品的零件：產品是代表零件的形狀，再轉到這個零件的方向
+          const R = rotations[k]
+          const local = new Matrix4().makeTranslation(...c)
+          if (R) local.multiply(new Matrix4().set(R[0], R[3], R[6], 0, R[1], R[4], R[7], 0, R[2], R[5], R[8], 0, 0, 0, 0, 1))
+          const r = ops.addInstance(next, created.get(representative[k])!.id, world.clone().multiply(local).toArray())
+          next = r.doc
+          added.push(r.instanceId)
+        }
+        commit(next)
+        set({ busy: undefined, selected: added[0] })
+        void generateThumbs(fresh.map((p) => get().products[p.id]).filter((p): p is Product => !!p))
+        info(
+          `已拆成 ${groups.length} 個零件（${unique.length} 種），各自放在原本的位置，可以個別選取、旋轉、移動。原本的整體零件仍在產品庫，不需要可以刪除。${ours ? '提示：新版匯出的 STEP 會記下鎖合關係，匯入時直接還原，不用再拆。' : ''}`,
+        )
       } catch (err) {
         fail(err)
       }
@@ -1086,7 +1483,7 @@ export const useModuleStore = create<State>()((set, get) => {
           updatedAt: Date.now(),
         }
         if (r.ports.length || next.category !== product.category || next.name !== product.name || next.maker !== product.maker) await persistProduct(next)
-        set((s) => ({ maybePorts: { ...s.maybePorts, [productId]: r.maybe } }))
+        set((s) => ({ maybePorts: { ...s.maybePorts, [productId]: r.maybe }, fixingHoles: { ...s.fixingHoles, [productId]: r.fixing } }))
         return { added: r.ports, maybe: r.maybe }
       } catch (err) {
         fail(err)
@@ -1224,7 +1621,7 @@ export const useModuleStore = create<State>()((set, get) => {
     },
 
     select(instance) {
-      set({ selected: instance, selectedTube: undefined })
+      set({ selected: instance, selectedTube: undefined, hintPort: undefined })
     },
 
     setMode(mode) {

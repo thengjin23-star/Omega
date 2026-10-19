@@ -70,13 +70,26 @@ describe('通用 3D 零件', () => {
       const meta = genericMeta(spec)
       const found = autoPorts(tess, createRaycaster(tess), { category: meta.category })
       const declared = built.ports.filter((p) => !/安裝面/.test(p.spec))
+      const pipes = found.ports.filter((f) => f.spec?.kind !== 'interface')
       for (const p of declared) {
-        const hit = found.ports.find((f) => distance(f.frame.origin, p.origin) < 0.3 && dot(f.frame.axis, p.axis) > 0.99)
+        const hit = pipes.find((f) => distance(f.frame.origin, p.origin) < 0.3 && dot(f.frame.axis, p.axis) > 0.99)
         expect(hit, `${meta.name} ${p.name} ${p.spec}`).toBeDefined()
         // 公母與尺寸一樣（PT 的 R／Rc；管徑）
         expect(specKey(hit!.spec!), `${meta.name} ${p.name}`).toBe(keyOf(p.spec, p.shape))
+        // 電磁閥：名稱依位置推測也要對（A／B 在上、P／排氣在底面）
+        if (spec.kind === 'valve') expect(hit!.name, `${meta.name} ${p.name}`).toBe(p.name)
       }
-      expect(found.ports.length, `${meta.name} 多找到的埠：${found.ports.map((f) => f.name).join()}`).toBe(declared.length)
+      expect(pipes.length, `${meta.name} 多找到的埠：${pipes.map((f) => f.name).join()}`).toBe(declared.length)
+      // 電磁閥（沒有型號）：依幾何推測的底面安裝面，與通用零件定義的安裝面同位置、同系列；標示為推測
+      const mount = built.ports.find((p) => /安裝面/.test(p.spec))
+      if (spec.kind === 'valve' && mount) {
+        const guess = found.ports.find((f) => f.spec?.kind === 'interface')
+        expect(guess, `${meta.name} 安裝面（找到 ${found.ports.map((f) => `${f.name}:${f.frame.axis.map(Math.round)}`).join(' ')}）`).toBeDefined()
+        expect(`安裝面：${(guess!.spec as { key: string }).key}`).toBe(mount.spec)
+        expect(distance(guess!.frame.origin, mount.origin)).toBeLessThan(0.3)
+        expect(dot(guess!.frame.axis, mount.axis)).toBeGreaterThan(0.99)
+        expect(guess!.detected?.basis).toMatch(/推測/)
+      }
       // 包圍盒合理（不是空的）
       expect(tess.triangleCount).toBeGreaterThan(20)
     }, 60_000)

@@ -11,7 +11,7 @@
  */
 import { add, cross, distance, dot, length, normalize, perpendicular, scale, sub, type Vec3 } from '../geometry/vec3'
 import { formatSpecShort, parseSpec, suggestByDiameter, type PortSpec, type Suggestion, type ThreadSpec } from '../threads'
-import { seriesFromCode, seriesInterfaceKey } from './generic/genericParts'
+import { seriesFromCode, seriesInterfaceKey, seriesOf, type ThreadSize } from './generic/genericParts'
 import { analyzeFace } from './faceAnalysis'
 import type { CodeInfo, ExpectedPort } from './makerCodes'
 import type { Raycaster } from './openTester'
@@ -179,10 +179,16 @@ function pickThread(suggestions: readonly Suggestion[], thread: CodeInfo['thread
 // ---------------------------------------------------------------- 候選
 
 /** 找出模型上可能是埠的孔與凸柱 */
-export function portCandidates(tess: Tessellation, raycast: Raycaster): PortCandidate[] {
+/**
+ * 找埠的候選（孔、凸柱）。out.fixing：太小、不會是氣路埠的孔（Ø1.5～3.9，多半是固定螺絲孔、定位孔），
+ * 不當成埠，只在畫面上標出來幫忙判斷安裝方向。
+ */
+export function portCandidates(tess: Tessellation, raycast: Raycaster, out?: { fixing: PortCandidate[] }): PortCandidate[] {
   const cylinders = collectCylinders(tess)
   const holes: (PortCandidate & { line: Cylinder; mouthT: number })[] = []
   const bosses: PortCandidate[] = []
+  // 小的貫穿孔：不是埠，多半是固定螺絲孔（畫面上標出）
+  const smallThrough: PortCandidate[] = []
   const openings = cylinders.map((c): [boolean, boolean] => [endOpen(c, 0, raycast), endOpen(c, 1, raycast)])
   // 凸柱尖端（公牙）的位置：從那裡進去的孔是公牙的通氣孔
   const tips = cylinders.flatMap((c, i) => {
@@ -201,6 +207,20 @@ export function portCandidates(tess: Tessellation, raycast: Raycaster): PortCand
     if (open[0] && open[1] && c.shape === 'hole' && (atTip(c, 0) || atTip(c, 1))) open[atTip(c, 0) ? 0 : 1] = false
     if (open[0] && open[1]) {
       // 貫穿孔：大孔（1/8 以上）兩端都可能是埠（接管座、管路型元件），小孔多半是固定螺絲孔
+      if (c.shape === 'hole' && c.radius * 2 >= 1.5 && c.radius * 2 < 7.5) {
+        for (const end of [0, 1] as const)
+          smallThrough.push({
+            shape: 'hole',
+            diameter: c.radius * 2,
+            depth: c.tMax - c.tMin,
+            origin: add(c.center, scale(c.axis, end === 0 ? c.tMin : c.tMax)),
+            axis: end === 0 ? scale(c.axis, -1) : c.axis,
+            passage: false,
+            shoulder: false,
+            through: true,
+            suggestions: [],
+          })
+      }
       if (c.shape !== 'hole' || c.radius * 2 < 7.5) return
       for (const end of [0, 1] as const) {
         const out = end === 0 ? scale(c.axis, -1) : c.axis
@@ -256,6 +276,15 @@ export function portCandidates(tess: Tessellation, raycast: Raycaster): PortCand
 
   // 同一條軸線、同方向的孔：取最外側、夠深的孔（沉頭、套筒太淺；內部的通道在更裡面）
   const deepEnough = (h: PortCandidate) => h.depth >= 0.6 * h.diameter && h.diameter >= 3.9
+  if (out) {
+    const small = (h: PortCandidate) => h.diameter >= 1.5 && h.diameter < 3.9 && (h.depth >= 0.6 * h.diameter || h.through)
+    out.fixing = [
+      ...smallThrough,
+      ...holes
+        .filter((h) => small(h) && !holes.some((o) => o !== h && small(o) && dot(o.axis, h.axis) > 0.999 && sameLine(o.line, h.line) && o.mouthT > h.mouthT + 0.05))
+        .map(({ line: _line, mouthT: _t, ...h }) => h),
+    ]
+  }
   const kept = holes.filter((h) => {
     if (!deepEnough(h)) return false
     return !holes.some((o) => o !== h && deepEnough(o) && dot(o.axis, h.axis) > 0.999 && sameLine(o.line, h.line) && o.mouthT > h.mouthT + 0.05)
@@ -358,24 +387,42 @@ export function autoPorts(
   tess: Tessellation,
   raycast: Raycaster,
   options: Options & { existing?: readonly ProductPort[] } = {},
-): { ports: ProductPort[]; maybe: DetectedPort[]; category: ProductCategory; name: string } {
-  const result = detectPorts(portCandidates(tess, raycast), tess, options)
+): { ports: ProductPort[]; maybe: DetectedPort[]; fixing: PortCandidate[]; category: ProductCategory; name: string } {
+  const out = { fixing: [] as PortCandidate[] }
+  const result = detectPorts(portCandidates(tess, raycast, out), tess, options)
   // 已有的埠（使用者定義過）附近不重複加入
   const fresh = result.ports.filter((p) => !(options.existing ?? []).some((e) => distance(e.frame.origin, p.candidate.origin) < 1))
   let ports = fresh.filter((p) => p.confidence === 'sure').map(toProductPort)
-  // 型號認得的電磁閥（例如 4V210-08）：底面加上裝集裝座的安裝面，底面的 P／排氣口由它封住
-  const series = result.category === 'valve' ? seriesFromCode(options.code?.series) : undefined
-  if (series && !(options.existing ?? []).some((p) => p.spec?.kind === 'interface')) ports = withValveMount(ports, series)
+  // 電磁閥：底面加上裝集裝座的安裝面，底面的 P／排氣口由它封住。
+  // 型號認得系列（例如 4V210-08）就用它；否則 A／B 與 P 在相反兩面時，依接管口推測系列（標示為推測）
+  if (result.category === 'valve' && !(options.existing ?? []).some((p) => p.spec?.kind === 'interface')) {
+    const series = seriesFromCode(options.code?.series)
+    if (series) ports = withValveMount(ports, series, `依型號 ${options.code!.series} 判斷為 ${series} 系列`)
+    else {
+      const p = ports.find((x) => x.name === 'P')
+      const work = ports.filter((x) => x.name === 'A' || x.name === 'B')
+      if (p?.spec?.kind === 'thread' && work.length && work.every((w) => dot(w.frame.axis, p.frame.axis) < -0.99)) {
+        const size = (p.spec.standard === 'M' ? `M${p.spec.size}` : p.spec.size) as ThreadSize
+        const guess = seriesOf(size)
+        ports = withValveMount(
+          ports,
+          guess,
+          `型號沒有系列資料：依接管口 ${formatSpecShort(p.spec)} 推測為 ${guess} 系列，請確認（與集裝座的系列相同才裝得上，可按「編輯」改）`,
+        )
+      }
+    }
+  }
   return {
     ports,
     maybe: fresh.filter((p) => p.confidence === 'maybe'),
+    fixing: out.fixing,
     category: result.category,
     name: result.name,
   }
 }
 
-/** 閥底面的 P、EA、EB（或 P、R）在同一面：加上安裝面（與通用集裝座的站位相同：原點偏離 P 口 W/2-3） */
-function withValveMount(ports: ProductPort[], series: 100 | 200 | 300 | 400): ProductPort[] {
+/** 閥底面的 P、EA、EB（或 P、R）在同一面：加上安裝面（與通用集裝座的站位相同：原點偏離底面中央 W/2-3） */
+function withValveMount(ports: ProductPort[], series: 100 | 200 | 300 | 400, basis: string): ProductPort[] {
   const p = ports.find((x) => x.name === 'P')
   const exhausts = ports.filter((x) => ['EA', 'EB', 'R'].includes(x.name) && dot(x.frame.axis, p?.frame.axis ?? [0, 0, 0]) > 0.99)
   if (!p || !exhausts.length) return ports
@@ -390,18 +437,23 @@ function withValveMount(ports: ProductPort[], series: 100 | 200 | 300 | 400): Pr
   const offset = { 100: 6, 200: 8, 300: 11, 400: 15 }[series]
   const spec = parseSpec(`安裝面：${seriesInterfaceKey(series)}`, { interfaceRole: 'plug' })
   if (!spec.ok) return ports
-  const mount = makePort({ name: '安裝面', spec: spec.spec, origin: add(p.frame.origin, scale(side, -offset)), axis, ref: along, detected: { shape: 'plane', auto: true } })
+  // 以底面兩端的口（EA～EB，3 口閥 P～R）的中點為基準：5 口閥就是 P 口
+  const middle = scale(add(from, to), 0.5)
+  const mount = makePort({ name: '安裝面', spec: spec.spec, origin: add(middle, scale(side, -offset)), axis, ref: along, detected: { shape: 'plane', auto: true, basis } })
   const sealed = new Set([p, ...exhausts])
   return [...ports.map((x) => (sealed.has(x) ? { ...x, sealedBy: mount.id } : x)), mount]
 }
 
 export function toProductPort(p: DetectedPort): ProductPort {
+  const d = Math.round(p.candidate.diameter * 100) / 100
+  const what = p.candidate.shape === 'hole' ? '孔' : '凸柱'
+  const basis = `${what} Ø${d}${p.spec ? ` → ${formatSpecShort(p.spec)}` : ''}（依直徑；牙型以型號為準）；名稱「${p.name}」依位置推測`
   return makePort({
     name: p.name,
     spec: p.spec,
     origin: p.candidate.origin,
     axis: p.candidate.axis,
-    detected: { shape: p.candidate.shape, diameter: Math.round(p.candidate.diameter * 100) / 100, auto: true },
+    detected: { shape: p.candidate.shape, diameter: d, auto: true, basis },
   })
 }
 
@@ -558,6 +610,17 @@ function nameValve(ports: DetectedPort[], set: Setter): void {
     }
   }
   if (ports.length === 3) {
+    // 3 口閥（仿 3V）：A 單獨在一面，P、R 在相對的另一面（一樣大時依位置，名稱為推測）
+    const faces = groupByFace(ports)
+    const lone = faces.find((g) => g.length === 1)
+    const pair = faces.find((g) => g.length === 2)
+    if (lone && pair) {
+      set(lone[0], 'A')
+      const [first, second] = pair[0].candidate.diameter - pair[1].candidate.diameter > 0.5 ? pair : sortAlong(pair, spreadAxis(pair))
+      set(first, 'P')
+      set(second, 'R')
+      return
+    }
     const [x, y, z] = bySize(ports)
     // 最小的是排氣（一樣大時無法分辨，依位置）
     const sorted = x.candidate.diameter - z.candidate.diameter > 0.5 ? [x, y, z] : sortAlong(ports, spreadAxis(ports))

@@ -16,6 +16,18 @@ export interface Tessellation {
   parts: MeshPart[]
   bbox: { min: Vec3; max: Vec3 }
   triangleCount: number
+  /**
+   * STEP 檔頂層的零件（名稱與所屬的網格編號）。組立檔每個零件一組；一般的單一零件
+   * 常常也有好幾個實體（本體、線圈…），所以有多組不代表一定是組立檔。舊資料沒有這個欄位。
+   */
+  groups?: { name: string; parts: number[] }[]
+}
+
+/** occt-import-js 的節點樹 */
+export interface OcctNode {
+  name?: string
+  meshes?: number[]
+  children?: OcctNode[]
 }
 
 /** occt-import-js 的輸出格式（只列出用得到的欄位） */
@@ -30,6 +42,18 @@ export interface OcctMesh {
 export interface OcctResult {
   success: boolean
   meshes: OcctMesh[]
+  root?: OcctNode
+}
+
+/** 頂層零件：從根節點往下走過「只有一個子節點」的包裝層，再取各個子節點（含其下所有網格） */
+export function topLevelGroups(root: OcctNode | undefined, meshCount: number): { name: string; parts: number[] }[] {
+  if (!root) return [{ name: '', parts: Array.from({ length: meshCount }, (_, i) => i) }]
+  let node = root
+  while (!node.meshes?.length && node.children?.length === 1) node = node.children[0]
+  const all = (n: OcctNode): number[] => [...(n.meshes ?? []), ...(n.children ?? []).flatMap(all)]
+  const groups = (node.children ?? []).map((c) => ({ name: c.name ?? '', parts: all(c) })).filter((g) => g.parts.length)
+  if (node.meshes?.length) groups.unshift({ name: node.name ?? '', parts: [...node.meshes] })
+  return groups.length ? groups : [{ name: node.name ?? '', parts: all(node) }]
 }
 
 /** 把 occt-import-js 的結果轉成緊湊的 typed array 結構（可直接存進 IndexedDB、傳給 three.js） */
@@ -51,7 +75,8 @@ export function fromOcctResult(result: OcctResult): Tessellation {
     const color = m.color && m.color.length >= 3 ? ([m.color[0], m.color[1], m.color[2]] as Vec3) : null
     return { name: m.name || `實體 ${i + 1}`, color, positions, normals, indices, faceRanges }
   })
-  return { parts, bbox: boundingBox(parts), triangleCount: parts.reduce((n, p) => n + p.indices.length / 3, 0) }
+  const groups = topLevelGroups(result.root, parts.length)
+  return { parts, bbox: boundingBox(parts), triangleCount: parts.reduce((n, p) => n + p.indices.length / 3, 0), groups }
 }
 
 export function boundingBox(parts: readonly MeshPart[]): { min: Vec3; max: Vec3 } {
@@ -109,6 +134,7 @@ interface Header {
   parts: { name: string; color: Vec3 | null; positions: number; normals: number; indices: number; faceRanges: number }[]
   bbox: Tessellation['bbox']
   triangleCount: number
+  groups?: Tessellation['groups']
 }
 
 /** 格式：'PTS1' + u32 表頭長度 + 表頭 JSON（補空白到 4 的倍數）+ 各零件的 positions／normals／indices／faceRanges */
@@ -124,6 +150,7 @@ export function serializeTessellation(t: Tessellation): Uint8Array {
     })),
     bbox: t.bbox,
     triangleCount: t.triangleCount,
+    ...(t.groups && { groups: t.groups }),
   }
   let json = new TextEncoder().encode(JSON.stringify(header))
   const padded = new Uint8Array(Math.ceil(json.length / 4) * 4).fill(0x20)
@@ -167,5 +194,5 @@ export function deserializeTessellation(bytes: Uint8Array): Tessellation {
       faceRanges: take(Uint32Array, p.faceRanges),
     }),
   )
-  return { parts, bbox: header.bbox, triangleCount: header.triangleCount }
+  return { parts, bbox: header.bbox, triangleCount: header.triangleCount, ...(header.groups && { groups: header.groups }) }
 }

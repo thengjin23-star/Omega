@@ -7,6 +7,7 @@ import {
   EdgesGeometry,
   HemisphereLight,
   LineBasicMaterial,
+  LineDashedMaterial,
   LineSegments,
   LinearSRGBColorSpace,
   Mesh,
@@ -53,6 +54,8 @@ export interface IllustrationRenderOptions {
   maxH: number
   /** 實際像素 ÷ 示意圖像素（輸出 PNG 用 2 倍，比較清楚） */
   scale: number
+  /** 爆炸圖的裝配線（模組座標的線段兩端），畫成虛線 */
+  guides?: readonly (readonly [Vec3, Vec3])[]
 }
 
 export interface RenderedIllustration {
@@ -258,6 +261,15 @@ export function renderIllustration(items: readonly IllustrationItem[], options: 
           scene.add(lines)
         }
       })
+    }
+    if (options.guides?.length) {
+      // 裝配線：虛線，畫在零件上面（不被零件擋住，看得出哪個零件裝到哪裡）
+      const dash = Math.max(spanX, spanY) / 90
+      const guide = track(new BufferGeometry().setFromPoints(options.guides.flatMap(([a, b]) => [new Vector3(...a), new Vector3(...b)])))
+      const lines = new LineSegments(guide, track(new LineDashedMaterial({ color: '#1e40af', dashSize: dash, gapSize: dash * 0.6, depthTest: false })))
+      lines.computeLineDistances()
+      lines.renderOrder = 10
+      scene.add(lines)
     }
     r.setSize(rw, rh, false)
     r.setRenderTarget(null)

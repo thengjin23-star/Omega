@@ -12,6 +12,9 @@ import { faceGeometry, geometriesFor } from './geometryCache'
 import { useModuleStore, useTransforms } from './moduleStore'
 import { DimensionLines, MeasureOverlay } from './Measure'
 import { PortMarker } from './PortMarker'
+import { HoleMarker } from './HoleMarker'
+import { gizmoRecentlyUsed } from './gizmoClock'
+import { PoseGizmo } from './PoseGizmo'
 import { TubeView } from './TubeView'
 import { cylinderMotion, interactionOf, meshCenter, useSimPiston, useSimSignalChip, useSimValveActive } from './simulation'
 import { ViewportCameraBridge } from './viewportCamera'
@@ -56,6 +59,9 @@ function InstanceView({ instance, product, mesh, matrix }: { instance: ModuleIns
   const connecting = useModuleStore((s) => !!s.connectFrom)
   const defining = useModuleStore((s) => s.mode === 'define-port')
   const simulating = useModuleStore((s) => s.mode === 'simulate')
+  // 不確定是不是埠的孔（固定孔、定位孔）：還沒加入為埠的
+  const maybeHoles = useModuleStore((s) => s.maybePorts[product.id])?.filter((m) => !product.ports.some((p) => Math.hypot(...m.candidate.origin.map((v, i) => v - p.frame.origin[i])) < 1))
+  const fixingHoles = useModuleStore((s) => s.fixingHoles[product.id])
   const nodeType = useModuleStore((s) => s.sim?.mc.circuit.nodes.find((n) => n.id === instance.id)?.type)
   const interaction = simulating ? interactionOf(nodeType) : undefined
   const valveActive = useSimValveActive(instance.id)
@@ -74,6 +80,7 @@ function InstanceView({ instance, product, mesh, matrix }: { instance: ModuleIns
 
   const onClick = (e: ThreeEvent<MouseEvent>, partIndex: number) => {
     if (e.delta > 4) return // 拖曳旋轉視角，不是點選
+    if (gizmoRecentlyUsed()) return // 點的是操作把手（射線穿過把手打到零件）
     e.stopPropagation()
     const s = useModuleStore.getState()
     if (s.mode === 'simulate') {
@@ -174,6 +181,8 @@ function InstanceView({ instance, product, mesh, matrix }: { instance: ModuleIns
       {product.ports.map((p) => (
         <PortMarker key={p.id} instanceId={instance.id} port={p} showLabel={selected} />
       ))}
+      {selected && !simulating && maybeHoles?.map((h, i) => <HoleMarker key={`m${i}`} productId={product.id} candidate={h.candidate} hole={h} />)}
+      {selected && !simulating && fixingHoles?.map((c, i) => <HoleMarker key={`f${i}`} productId={product.id} candidate={c} />)}
     </group>
   )
 }
@@ -221,6 +230,33 @@ function TestHook() {
         return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height }
       },
       state: () => useModuleStore.getState(),
+      /** 模組座標的點 → 螢幕座標 */
+      projectWorld(point: Vec3) {
+        const p = new Vector3(...point).project(camera)
+        const rect = gl.domElement.getBoundingClientRect()
+        return { x: rect.left + ((p.x + 1) / 2) * rect.width, y: rect.top + ((1 - p.y) / 2) * rect.height }
+      },
+      transforms: () => {
+        const { doc, products } = useModuleStore.getState()
+        return computeTransforms(doc, products).transforms
+      },
+      /** 每個零件的外框（模組座標）：[min, max] */
+      boxes: () => {
+        const { doc, products, meshes } = useModuleStore.getState()
+        const { transforms } = computeTransforms(doc, products)
+        return Object.fromEntries(
+          doc.instances.flatMap((i) => {
+            const mesh = meshes[products[i.productId]?.source.sha256 ?? '']
+            if (!mesh || !transforms[i.id]) return []
+            // 由頂點算出的緊外框（與零件自己的座標軸方向無關）
+            const m = new Matrix4().fromArray(transforms[i.id])
+            const box = new Box3()
+            const v = new Vector3()
+            for (const part of mesh.parts) for (let k = 0; k < part.positions.length; k += 3) box.expandByPoint(v.fromArray(part.positions, k).applyMatrix4(m))
+            return [[i.id, [box.min.toArray(), box.max.toArray()]]]
+          }),
+        )
+      },
     }
     return () => {
       delete w.__pneumatic3d
@@ -241,7 +277,7 @@ export function Viewport() {
       className="touch-none"
       camera={{ position: [260, -320, 220], up: [0, 0, 1], fov: 40, near: 0.5, far: 50000 }}
       onPointerMissed={(e) => {
-        if (e.type !== 'click') return
+        if (e.type !== 'click' || gizmoRecentlyUsed()) return
         const s = useModuleStore.getState()
         if (s.connectFrom) s.cancelConnect()
         else if (s.mode === 'tube') s.setMode('tube')
@@ -268,6 +304,7 @@ export function Viewport() {
         ))}
       </group>
       <OrbitControls makeDefault enableDamping={false} />
+      <PoseGizmo />
       <GizmoHelper alignment="bottom-right" margin={[64, 64]}>
         <GizmoViewport axisColors={['#dc2626', '#16a34a', '#2563eb']} labelColor="white" />
       </GizmoHelper>
