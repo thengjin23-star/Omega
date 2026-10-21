@@ -84,6 +84,8 @@ export interface IllustrationInfo {
   edges?: boolean
   /** 標註內容：型號、型號＋數量、型號＋名稱 */
   label?: 'code' | 'code-qty' | 'code-name'
+  /** 標註的字高（示意圖像素，預設 26）；PNG、PDF 依同樣比例 */
+  fontSize?: number
   /** 不標註的型號（群組鍵：產品 id，PU 管為 tube:管徑） */
   hidden?: string[]
   /** 自訂的標註文字（群組鍵 → 文字） */

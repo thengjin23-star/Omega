@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_CALLOUT_STYLE,
   calloutMargins,
+  calloutStyle,
   contentBounds,
   illustrationSheet,
   labelAt,
@@ -169,6 +171,53 @@ describe('calloutMargins / contentBounds', () => {
   })
 })
 
+describe('calloutStyle（標註字體大小）', () => {
+  it('沒設定時是預設樣式；超出範圍取最近的值', () => {
+    expect(calloutStyle(undefined)).toEqual(DEFAULT_CALLOUT_STYLE)
+    expect(calloutStyle(26)).toEqual(DEFAULT_CALLOUT_STYLE)
+    expect(calloutStyle(Number.NaN)).toEqual(DEFAULT_CALLOUT_STYLE)
+    expect(calloutStyle(4).font).toBe(12)
+    expect(calloutStyle(200).font).toBe(64)
+    expect(calloutStyle(40)).toMatchObject({ font: 40, pad: 6 })
+  })
+
+  it('字放大：標籤變大、留邊變大，仍然不重疊、在零件圖外面', () => {
+    const image = { x: 0, y: 0, w: 600, h: 400 }
+    const groups = [
+      { key: 'v', text: '4V210-08', anchors: [[100, 380], [300, 380], [500, 380]] as Pt[] },
+      { key: 'a', text: 'PC6-01', anchors: [[120, 20], [480, 20]] as Pt[] },
+      { key: 'b', text: 'PC4-01', anchors: [[300, 30]] as Pt[] },
+      { key: 's', text: 'BSL-01', anchors: [[20, 200]] as Pt[] },
+    ]
+    const sized = (font: number) => {
+      const style = calloutStyle(font)
+      const m = (t: string) => (t.length * 15 * style.font) / 26
+      const margins = calloutMargins(
+        groups.map((g) => g.text),
+        m,
+        style,
+      )
+      const img = { ...image, x: margins.side, y: margins.top }
+      const canvas = { w: img.w + margins.side * 2, h: img.h + margins.top * 2 }
+      const labels = layoutCallouts({ image: img, canvas, measure: m, style, groups: groups.map((g) => ({ ...g, anchors: g.anchors.map((a): Pt => [a[0] + img.x, a[1] + img.y]) })) })
+      return { margins, labels, img }
+    }
+    const small = sized(16)
+    const big = sized(48)
+    expect(big.margins.side).toBeGreaterThan(small.margins.side)
+    expect(big.margins.top).toBeGreaterThan(small.margins.top)
+    expect(big.labels[0].h).toBe(48 + calloutStyle(48).pad * 2)
+    expect(small.labels[0].h).toBe(16 + calloutStyle(16).pad * 2)
+    for (const { labels, img } of [small, big]) {
+      expect(labels).toHaveLength(4)
+      for (let i = 0; i < labels.length; i++) {
+        expect(overlaps(labels[i], { ...img, key: '', text: '', side: 'left', anchors: [] })).toBe(false)
+        for (let j = i + 1; j < labels.length; j++) expect(overlaps(labels[i], labels[j])).toBe(false)
+      }
+    }
+  })
+})
+
 describe('illustrationSheet', () => {
   it('圖框、標題欄、零件圖與標註都在圖紙內', () => {
     const labels = layoutCallouts({
@@ -180,15 +229,20 @@ describe('illustrationSheet', () => {
         { key: 'f', text: 'PL802D', anchors: [[250, 150]] },
       ],
     })
-    const sheet = illustrationSheet({
-      paper: 'A3',
+    const input = {
+      paper: 'A3' as const,
       title: { company: { name: '甲乙氣動' }, title: '閥島 示意圖', customer: '大明精機', date: '2026-10-13' },
       canvas: { w: 1000, h: 500 },
       image: { dataUrl: 'data:image/png;base64,AAAA', rect: { x: 200, y: 100, w: 600, h: 300 } },
       labels,
       notes: ['這個角度看不到（未標註）：BSL01'],
-    })
+    }
+    const sheet = illustrationSheet(input)
     expect(sheet.width).toBe(420)
+    // PDF 的標註字高與示意圖的字高成比例
+    const sizeOf = (s: typeof sheet, text: string) => s.primitives.flatMap((p) => (p.kind === 'text' && p.text === text ? [p.size] : []))[0]
+    const bigger = illustrationSheet({ ...input, style: calloutStyle(39) })
+    expect(sizeOf(bigger, 'PL802D') / sizeOf(sheet, 'PL802D')).toBeCloseTo(39 / 26, 6)
     const texts = sheet.primitives.flatMap((p) => (p.kind === 'text' ? [p.text] : []))
     expect(texts).toEqual(expect.arrayContaining(['4SV21008BD', 'PL802D', '閥島 示意圖', '大明精機', '不依比例', '這個角度看不到（未標註）：BSL01']))
     const image = sheet.primitives.find((p) => p.kind === 'image' && p.layer === 'SYMBOL')

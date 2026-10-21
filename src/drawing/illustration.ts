@@ -115,6 +115,15 @@ export interface CalloutStyle {
 
 export const DEFAULT_CALLOUT_STYLE: CalloutStyle = { font: 26, pad: 4, gap: 56 }
 
+/** 可以設定的標註字高（px） */
+export const CALLOUT_FONT_RANGE = { min: 12, max: 64 }
+
+/** 指定字高的標註樣式（超出範圍時取最近的值）；留白跟著字高縮放 */
+export function calloutStyle(font: number | undefined): CalloutStyle {
+  const size = Number.isFinite(font) ? Math.round(Math.min(CALLOUT_FONT_RANGE.max, Math.max(CALLOUT_FONT_RANGE.min, font!))) : DEFAULT_CALLOUT_STYLE.font
+  return { ...DEFAULT_CALLOUT_STYLE, font: size, pad: Math.max(2, Math.round(size * 0.15)) }
+}
+
 export interface CalloutLayoutInput {
   /** 零件圖在示意圖上的位置 */
   image: Rect
