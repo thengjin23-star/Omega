@@ -92,7 +92,8 @@ export function paintIllustration(ctx: CanvasRenderingContext2D, p: Illustration
       ctx.stroke()
     }
     ctx.strokeStyle = '#ffffff'
-    ctx.lineWidth = 6
+    // 白邊隨字高縮放（預設字高 26 時為 6）
+    ctx.lineWidth = Math.max(3, p.style.font * 0.23)
     ctx.strokeText(l.text, cx, cy + 1)
     ctx.fillStyle = '#111827'
     ctx.fillText(l.text, cx, cy + 1)

@@ -5,8 +5,10 @@ import type { IllustrationInfo, IllustrationView } from '../assembly/types'
 import { Button, Dialog } from '../components/ui'
 import { downloadPdf } from '../drawing/exportSheets'
 import {
+  CALLOUT_FONT_RANGE,
   DEFAULT_CALLOUT_STYLE,
   calloutMargins,
+  calloutStyle,
   contentBounds,
   illustrationSheet,
   labelAt,
@@ -26,7 +28,6 @@ import { useModuleStore } from './moduleStore'
 import { viewportDirection } from './viewportCamera'
 
 const selectClass = 'mt-0.5 h-8 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-800'
-const STYLE = DEFAULT_CALLOUT_STYLE
 /** 零件圖最大尺寸（示意圖像素）；輸出 PNG 為 2 倍 */
 const MAX_W = 1100
 const MAX_H = 640
@@ -81,6 +82,7 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
   const labelMode = info.label ?? 'code'
   const footer = info.footer ?? true
   const explode = info.explode ?? 0
+  const style = useMemo(() => calloutStyle(info.fontSize), [info.fontSize])
 
   // 打開時記下 3D 畫面的視角（之後在 3D 畫面轉動不影響這次的示意圖）
   const [live] = useState(() => viewportDirection())
@@ -182,11 +184,11 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
   const layout = useMemo(() => {
     if (!rendered) return undefined
     const shown = groups.filter((g) => !hidden.has(g.key) && g.anchors.length > 0)
-    const measure = (t: string) => measureLabel(t, STYLE.font)
+    const measure = (t: string) => measureLabel(t, style.font)
     const margins = calloutMargins(
       shown.map((g) => g.text),
       measure,
-      STYLE,
+      style,
     )
     const image = { x: margins.side, y: margins.top, w: rendered.result.width, h: rendered.result.height }
     const canvas = { w: image.w + margins.side * 2, h: image.h + margins.top * 2 }
@@ -198,13 +200,13 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
       canvas,
       groups: shown.map((g) => ({ key: g.key, text: g.text, anchors: g.anchors.map((a): Pt => [a[0] + image.x, a[1] + image.y]) })),
       measure,
-      style: STYLE,
+      style,
       fixed,
     })
     return { image, canvas, labels }
     // info.positions 只在 positionsValid 時使用
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rendered, groups, hidden, info.positions, positionsValid, drag])
+  }, [rendered, groups, hidden, info.positions, positionsValid, drag, style])
 
   const footerText = useMemo(
     () => ({
@@ -232,13 +234,13 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
         image: layout.image,
         base: rendered.result.canvas,
         labels: layout.labels,
-        style: STYLE,
+        style,
         footer: footer ? footerText : undefined,
         active: drag?.key ?? hover,
       },
       dpr,
     )
-  }, [layout, rendered, footer, footerText, drag, hover])
+  }, [layout, rendered, footer, footerText, drag, hover, style])
 
   const toLocal = (e: ReactPointerEvent<HTMLCanvasElement>): Pt => {
     const r = e.currentTarget.getBoundingClientRect()
@@ -298,7 +300,7 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
       image: layout.image,
       base: rendered.result.canvas,
       labels: layout.labels,
-      style: STYLE,
+      style,
       footer: footer ? footerText : undefined,
     }
   }
@@ -353,7 +355,7 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
         canvas: { w: p.view.w, h: p.view.h },
         image: { dataUrl: rendered.result.canvas.toDataURL('image/png'), rect: { ...p.image, x: p.image.x - p.view.x, y: p.image.y - p.view.y } },
         labels: p.labels.map((l): CalloutLabel => ({ ...l, x: l.x - p.view.x, y: l.y - p.view.y, anchors: l.anchors.map(shift) })),
-        style: STYLE,
+        style,
         notes,
       })
       await downloadPdf([sheet], fileBase, settings.drawer || undefined)
@@ -444,6 +446,31 @@ export function IllustrationDialog({ onClose, onEditList }: { onClose: () => voi
                 <option value="code-name">型號＋名稱</option>
               </select>
             </label>
+            <div className="text-xs text-slate-500">
+              <div className="flex items-center justify-between gap-1">
+                <span>標註字體大小</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="text-slate-700 tabular-nums" data-testid="callout-font">
+                    {style.font} px
+                  </span>
+                  {style.font !== DEFAULT_CALLOUT_STYLE.font && (
+                    <button type="button" className="text-blue-600 hover:underline" onClick={() => set({ fontSize: undefined })}>
+                      預設
+                    </button>
+                  )}
+                </span>
+              </div>
+              <input
+                type="range"
+                aria-label="標註字體大小"
+                min={CALLOUT_FONT_RANGE.min}
+                max={CALLOUT_FONT_RANGE.max}
+                step={2}
+                value={style.font}
+                onChange={(e) => set({ fontSize: Number(e.target.value) })}
+                className="mt-1.5 w-full accent-blue-600"
+              />
+            </div>
             <div className="flex flex-col justify-end gap-1">
               <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input type="checkbox" checked={edges} onChange={(e) => set({ edges: e.target.checked })} />
